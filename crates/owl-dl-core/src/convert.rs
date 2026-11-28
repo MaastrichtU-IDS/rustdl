@@ -5449,17 +5449,57 @@ fn int_as_decimal(v: i64) -> Option<Decimal> {
 }
 
 /// The integer value of a whole decimal (`12.0` IS the integer `12`), or `None`
-/// for a fractional decimal or one outside `i64`.
+/// for a fractional decimal or one outside `i64`. Read through `i128`, so `i64::MIN`
+/// (whose magnitude is not an `i64`) is still an `i64`.
 fn decimal_as_int(d: &Decimal) -> Option<i64> {
-    if !d.frac.is_empty() {
-        return None;
+    match whole_decimal(d) {
+        WholeDecimal::Whole(v) => i64::try_from(v).ok(),
+        WholeDecimal::Fractional | WholeDecimal::Huge { .. } => None,
     }
-    let mag: i64 = if d.int.is_empty() {
-        0
-    } else {
-        d.int.parse().ok()?
+}
+
+/// A decimal read as an integer, exactly (#641).
+enum WholeDecimal {
+    /// Not an integer: no integer key holds it.
+    Fractional,
+    /// A whole value within `i128`.
+    Whole(i128),
+    /// A whole value beyond `i128` (more than 38 digits), with its sign. It is beyond
+    /// every `i64` bound, so the sign alone decides membership in an integer range.
+    Huge { negative: bool },
+}
+
+fn whole_decimal(d: &Decimal) -> WholeDecimal {
+    if !d.frac.is_empty() {
+        return WholeDecimal::Fractional;
+    }
+    if d.int.is_empty() {
+        return WholeDecimal::Whole(0);
+    }
+    match d.int.parse::<i128>() {
+        Ok(mag) => WholeDecimal::Whole(if d.negative { -mag } else { mag }),
+        Err(_) => WholeDecimal::Huge {
+            negative: d.negative,
+        },
+    }
+}
+
+/// #641: does the integer key `i` hold the decimal `d`? Exact for every decimal: a
+/// fractional one is in no integer key, a whole one is compared as an `i128`, and one
+/// beyond `i128` lies past every `i64` bound, so it is in a range exactly when that
+/// range is unbounded on its side. `decimal_as_int` returns `None` for a whole value
+/// beyond `i64`, and reading that `None` as "not a member" made
+/// `integer ⊓ {1E20, 2E20}` disjoint, a false unsat with the guarantee set.
+fn int_set_holds_decimal(i: &IntSet, d: &Decimal) -> bool {
+    let in_range = |r: &IntegerRange| match whole_decimal(d) {
+        WholeDecimal::Fractional => false,
+        WholeDecimal::Whole(v) => {
+            r.min.is_none_or(|lo| v >= i128::from(lo)) && r.max.is_none_or(|hi| v <= i128::from(hi))
+        }
+        WholeDecimal::Huge { negative: true } => r.min.is_none(),
+        WholeDecimal::Huge { negative: false } => r.max.is_none(),
     };
-    Some(if d.negative { -mag } else { mag })
+    i.ranges().iter().any(in_range)
 }
 
 /// The single value of a decimal range that is a point `[v, v]`, else `None`.
@@ -5560,6 +5600,13 @@ fn seed_int_decimal_cross_subsumptions(
         )
         .collect();
     for (dc, vals) in &dec_values {
+        // #641: a whole value beyond `i64` is still in an unbounded integer range.
+        for (ic, set) in int_ranges {
+            if vals.iter().all(|d| int_set_holds_decimal(set, d)) {
+                push(out, *dc, *ic);
+            }
+        }
+        // An `i64` enumeration holds only `i64` values.
         let Some(ints) = vals
             .iter()
             .map(|d| decimal_as_int(d))
@@ -5567,11 +5614,6 @@ fn seed_int_decimal_cross_subsumptions(
         else {
             continue;
         };
-        for (ic, set) in int_ranges {
-            if ints.iter().all(|&v| set.contains(v)) {
-                push(out, *dc, *ic);
-            }
-        }
         for (ic, set) in int_oneofs {
             if ints.iter().all(|v| set.contains(v)) {
                 push(out, *dc, *ic);
@@ -5630,7 +5672,7 @@ fn seed_int_decimal_cross_disjoint(
                 .iter()
                 .all(|r| as_dec_interval(r).is_some_and(|c| c.disjoint(d)))
     };
-    let int_in = |i: &IntSet, d: &Decimal| decimal_as_int(d).is_some_and(|v| i.contains(v));
+    let int_in = int_set_holds_decimal;
     let range_x_oneof = |i: &IntSet, t: &std::collections::BTreeSet<Decimal>| {
         !t.is_empty()
             && i.ranges()

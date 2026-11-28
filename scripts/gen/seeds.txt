@@ -34,3 +34,5 @@
 # individuals, and the licence draw consumes the case's stream, so universal bodies change:
 # 540 of the 1000 keep their 8efe7762dc2b axioms (none of them carries the motif). The other
 # profiles' 5300 bodies are again byte-identical (checked 2026-11-28).
+# 449a80f39a8b (the committed gen.py) changes only the self-test (a negative control for the
+# closure pin); it regenerates all 1000 universal bodies byte-identically to 7ae4404de302.

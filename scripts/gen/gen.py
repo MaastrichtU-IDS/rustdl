@@ -1407,8 +1407,7 @@ def self_test():
     simple_pos = re.compile(r"(?:Cardinality\(\d+ |ObjectHasSelf\(|FunctionalObjectProperty\(|"
                             r"IrreflexiveObjectProperty\(|AsymmetricObjectProperty\(|"
                             r"DisjointObjectProperties\()(?:ObjectInverseOf\()?:(r\d+)")
-    leaks = []
-    for c in unis:
+    def leaked(c):
         tops = [a.split(":")[-1].rstrip(")") for a in c.axioms
                 if a.startswith(f"SubObjectPropertyOf({TOP} :")]
         ok_simple = simple_roles(c.roles + ["__top__"],
@@ -1418,9 +1417,17 @@ def self_test():
         # Every operand of a property disjointness, not only the first.
         used |= {x for a in c.axioms if a.startswith("DisjointObjectProperties(")
                  for x in re.findall(r":(r\d+)", a)}
-        if not used <= ok_simple:
-            leaks.append((c.index, sorted(used - ok_simple)))
+        return sorted(used - ok_simple)
+
+    leaks = [(c.index, x) for c in unis if (x := leaked(c))]
     ok("no role below top (or above such a role) in a simple position", leaks, [])
+
+    class _Leak:  # negative control: a role below top as the second disjoint operand
+        roles = ["r0", "r1"]
+        role_axioms = []
+        axioms = [f"SubObjectPropertyOf({TOP} :r1)", "DisjointObjectProperties(:r0 :r1)"]
+    ok("the closure pin sees a role below top in the second disjoint position",
+       leaked(_Leak()), ["r1"])
     lics = [c.licence for c in unis if c.licence != "none"]
     with_inds = sum(bool(c.inds) for c in unis)
     ok("about half the cases with individuals carry a licensed-fold motif",

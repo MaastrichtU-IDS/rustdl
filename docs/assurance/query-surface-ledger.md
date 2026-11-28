@@ -710,7 +710,7 @@ Measured 2026-11-28 with seed 20261128, N = 1000, generator `7ae4404de302` and p
 |---|---|---|---:|---|---|
 | MU1 | the licence check is gone: every atomic class counts as non-empty | `8efe7762dc2b` | 131 of 500 | case 0 | all finding (pair, unsat, consistency, type FPs) |
 | MU2 | `∀u.X` folds to ⊥ for any filler | `8efe7762dc2b` | 65 of 500 | case 1 | all finding (unsat, consistency, pair FPs) |
-| MU3 | an unrelated class's told instance licenses the fold, so the licence comes from the wrong class | `7ae4404de302` | 49 of 500 | case 3 | all finding (3 of them under a budget cut) |
+| MU3 | an unrelated class's told instance licenses the fold, so the licence comes from the wrong class | `7ae4404de302` | 49 of 500 | case 3 | all finding (2 of them under a budget cut); 6 more cases differ only in exposed misses, 3 of them budget-cut |
 
 **Control, N = 1000: 0 findings.**
 
@@ -728,17 +728,17 @@ Measured 2026-11-28 with seed 20261128, N = 1000, generator `7ae4404de302` and p
 
 The guaranteed tier is thin: it is 30 of the 824 scored cases rustdl calls consistent. `completeness_guaranteed` requires the pure-EL gate, and of the 794 non-guaranteed cases, 744 also have trusted-Sat refutations and 569 set `universal_role_ordinary`. So **this profile mostly tests for false positives**, which are scored at every tier. Six cases (8, 201, 338, 706, 733, 759) are inconsistent KBs that rustdl calls consistent. Each one sets `universal_role_ordinary` in `classify` and in `consistent`, so each is exposed, not a finding.
 
-**Licensed motifs: does the control exercise the fold?** Scored cases by form and variant, over all 1000; MU3 detections are over cases 0–499:
+**Licensed motifs: does the control exercise the fold?** Scored cases by form and variant, over all 1000; MU3 detections are over cases 0–499 (6 `lic`, 42 `unlic`, 1 without the motif):
 
 | form | `lic` scored | `unlic` scored | consistent `lic` with the consequence derived | MU3 detections, `lic` / `unlic` |
 |---|---:|---:|---:|---:|
-| `∃u.X ⊑ B` | 20 | 33 | 17 of 17 | 0 / 3 |
-| `≥1 u.X ⊑ B` | 29 | 30 | 23 of 23 | 1 / 4 |
-| `B ⊑ ∀u.¬X` | 28 | 29 | 20 of 20 | 0 / 5 |
-| `B ⊑ ≤0 u.X` | 28 | 29 | 19 of 19 | 2 / 4 |
+| `∃u.X ⊑ B` | 20 | 33 | 17 of 17 | 1 / 9 |
+| `≥1 u.X ⊑ B` | 29 | 30 | 23 of 23 | 1 / 10 |
+| `B ⊑ ∀u.¬X` | 28 | 29 | 20 of 20 | 1 / 12 |
+| `B ⊑ ≤0 u.X` | 28 | 29 | 19 of 19 | 3 / 11 |
 
 - **How "derived" is read:** I reran classify on every scored motif case. For `∃` and `≥1`, "derived" means every satisfiable named class reaches `B`, since rustdl reports `B ≡ ⊤` as rows, not as an equivalence group with `owl:Thing`. For `∀` and `≤0`, it means `B` is unsatisfiable. The remaining `lic` cases (26 in total) are inconsistent KBs.
-- **The check says both yes and no:** on the `unlic` controls it reads "not derived" on 94 of the 106 consistent cases. The other 12 reach the filler's non-emptiness by another route, and none of them is a finding.
+- **The check says both yes and no:** on the `unlic` controls it reads "not derived" on 94 of the 106 consistent cases. Of the other 12, 10 still derive the consequence with the motif axiom deleted (`B` is ⊤ or unsatisfiable for reasons unrelated to `X`). In the remaining 2 (cases 132 and 967), the oracle infers instances of `X`, so the fold is licensed after all. None of the 12 is a finding.
 - **My first check was wrong:** it looked for `owl:Thing` in an equivalence group, so it read 0 on `∃` and `≥1`. Inspecting case 23 showed the row form.
 
 **Peer disagreements (8, not scored), all adjudicated by hand.** HermiT misses universal-role entailments through a role above top. Konclude misses some, and in one case reports an inconsistency that has a model. Neither peer is an oracle here, and the "both agree" rule kept every case out of scoring.

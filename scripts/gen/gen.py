@@ -1333,7 +1333,10 @@ class DataCase(Case):
         if k == "func":
             return f"FunctionalDataProperty(:{self.D()})"
         if k == "disjcls":
-            return f"DisjointClasses({self.C()} {self.C()})"
+            # Distinct operands: rustdl reads a repeat as a set, the peers as a list (#538).
+            # Drawn as before and refused on a repeat, so other cases keep their stream.
+            x, y = self.C(), self.C()
+            return None if x == y else f"DisjointClasses({x} {y})"
         if k == "dtdef":
             if r.random() > self.dtdef_p * 7:   # rustdl drops it: keep it rare
                 return None

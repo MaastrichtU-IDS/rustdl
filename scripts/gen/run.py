@@ -307,7 +307,7 @@ def score(oracle_ans, classes, arms):
             gated = (not kj.get("incomplete") and not kj.get("relies_on_trusted_consistency")
                      and not kj.get("wedge_clauses_refused") and not kj.get("dropped")
                      and not kj.get("universal_role_ordinary")
-                     and not kj.get("data_case_split_risk"))
+                     and not kj.get("data_case_split_risk") and not collapsed(kj))
             add("consistency-MISSED", "finding" if gated else "exposed", "KB", "consistent")
         return out
 
@@ -335,7 +335,10 @@ def score(oracle_ans, classes, arms):
             add(fp_kind or "pair-FP", "finding", f"{s}|{t}", arm)
         if arm != "classify":
             continue  # saturation-only is a documented under-approximation: no MISSED
-        tier = "finding" if j.get("completeness_guaranteed") else "exposed"
+        # #538: rustdl reads n-ary operands as a set (`collapsed_operands`), the peers as a
+        # list, so `DisjointClasses(:C :C)` makes C unsat for them only: declared, exposed.
+        tier = ("finding" if j.get("completeness_guaranteed") and not collapsed(j)
+                else "exposed")
         for c in sorted(o_unsat - r_unsat):
             add("unsat-MISSED", tier, c, arm)
         for s, t in sorted(o_cmp - r_cmp):
@@ -446,13 +449,19 @@ def one_case(path, binary, env, cache, out_dir, realize=False, sat=False):
                 "relies_on_trusted_consistency", "wedge_clauses_refused",
                 "trusted_sat_refutations", "wedge_hierarchy_blind", "dropped",
                 "consistency_undetermined", "universal_role_ordinary",
-                "data_case_split_risk")}
+                "data_case_split_risk", "collapsed_operands")}
     rec["cpu_s"] = round(_cpu() - cpu0, 3)
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(".part")
     tmp.write_text(json.dumps(rec))
     tmp.replace(dest)
     return rec
+
+
+def collapsed(j):
+    """#538: an n-ary axiom repeated an operand, read as a set by rustdl, as a list by the
+    peers (`docs/json-schema.md`, `collapsed_operands`)."""
+    return bool((j.get("collapsed_operands") or {}).get("axioms"))
 
 
 def hermit_superset(ora):
@@ -632,6 +641,8 @@ def cmd_report(a):
     def miss_reason(r):
         """Why an exposed classify miss is not a finding: the first declared reason."""
         s = summ(r)
+        if collapsed(s):
+            return "collapsed_operands"
         for k in ("incomplete", "dropped", "data_case_split_risk", "universal_role_ordinary",
                   "relies_on_trusted_consistency", "wedge_hierarchy_blind"):
             if s.get(k):
@@ -959,6 +970,12 @@ def self_test():
        sk(cons, {A: "inconsistent", B: "inconsistent", C: "inconsistent"}),
        [("consistency-FP", "finding", "KB")])
     ok("sat refusing an inconsistent KB is clean", sk(inc, {A: "inconsistent"}), [])
+    ok("a certified miss under collapsed operands (#538) is exposed",
+       kinds(dict(cons, unsat=[C]), classify=cj(collapsed_operands={"axioms": 1, "vacuous": 1}))
+       [:1], [("unsat-MISSED", "exposed", C)])
+    ok("a certified miss with no collapsed operands stays a finding",
+       kinds(dict(cons, unsat=[C]), classify=cj(collapsed_operands={"axioms": 0, "vacuous": 0}))
+       [:1], [("unsat-MISSED", "finding", C)])
     # hermit_superset: HermiT strictly containing Konclude is scored; anything else is not.
     def peers(kp, hp, ku=(), hu=(), kc=True, hc=True):
         mk = lambda c, ps, u: {"status": "ok", "consistent": c, "unsat": list(u),

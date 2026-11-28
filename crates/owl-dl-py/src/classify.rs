@@ -97,8 +97,9 @@ impl PyClassification {
     /// `wedge_hierarchy_blind`, no `wedge_abox_blind`, no `tbox_individuals_unseeded`, no
     /// `wedge_clauses_refused`, no
     /// `derived_same_undecided`, no `consistency_undetermined`, no dropped
-    /// axiom and no `universal_role_ordinary` (#543). `False` means completeness is not
-    /// guaranteed, not that the hierarchy is incomplete.
+    /// axiom, no `universal_role_ordinary` (#543) and no `data_case_split_risk` (#589).
+    /// `False` means completeness is not guaranteed, not that the hierarchy is
+    /// incomplete.
     #[getter]
     fn completeness_guaranteed(&self) -> bool {
         self.inner.completeness_guaranteed()
@@ -169,6 +170,20 @@ impl PyClassification {
     fn universal_role_ordinary(&self) -> bool {
         let st = self.inner.stats();
         st.universal_role_ordinary && !st.inconsistent
+    }
+
+    /// True iff some data range may need reasoning by cases over its values, which
+    /// rustdl does not do (#589): a range that is not a single value meets another
+    /// range of its datatype without a seeded `⊑` into it. Then `C ⊑ ∃d.{1,2}`,
+    /// `hasValue(d,1) ⊑ E` and `hasValue(d,2) ⊑ E` entail `C ⊑ E`, which can be
+    /// missed. Every reported subsumption holds, but one may be missing and a class
+    /// reported satisfiable may be unsatisfiable. Voids `completeness_guaranteed`;
+    /// `classify` emits `DataCaseSplitWarning`. `False` when the ontology is proved
+    /// inconsistent.
+    #[getter]
+    fn data_case_split_risk(&self) -> bool {
+        let st = self.inner.stats();
+        st.data_case_split_risk && !st.inconsistent
     }
 
     /// True iff `inconsistent is False` rests on a consistency-wedge model that no

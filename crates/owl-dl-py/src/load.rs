@@ -46,8 +46,9 @@ pub(crate) fn load_path(path: &str) -> PyResult<SetOntology<RcStr>> {
 }
 
 /// #597: what a query's conversion dropped, plus #543's two universal-role flags
-/// (class level, role level), as the Python wrappers warn them.
-pub(crate) type ConversionNotes = (std::collections::BTreeMap<String, u64>, bool, bool);
+/// (class level, role level) and #589's `data_case_split_risk`, as the Python
+/// wrappers warn them.
+pub(crate) type ConversionNotes = (std::collections::BTreeMap<String, u64>, bool, bool, bool);
 
 thread_local! {
     /// #597: the notes of the last noted load on this thread. A Python wrapper
@@ -67,8 +68,13 @@ pub(crate) fn set_notes(notes: ConversionNotes) {
 /// (the parse, which dominates, is not repeated). A conversion that fails records
 /// nothing; the query itself then fails on the same conversion.
 pub(crate) fn note_conversion(ontology: &SetOntology<RcStr>) {
-    if let Ok((dropped, uro, uro_for_roles)) = owl_dl_reasoner::conversion_notes(ontology) {
-        set_notes((dropped.by_kind().clone(), uro, uro_for_roles));
+    if let Ok(f) = owl_dl_reasoner::conversion_flags(ontology) {
+        set_notes((
+            f.dropped.by_kind().clone(),
+            f.universal_role_ordinary,
+            f.universal_role_ordinary_for_roles,
+            f.data_case_split_risk,
+        ));
     }
 }
 

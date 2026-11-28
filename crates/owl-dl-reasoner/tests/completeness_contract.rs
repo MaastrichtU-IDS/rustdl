@@ -152,7 +152,7 @@ fn each_condition_alone_voids_the_guarantee() {
     );
 
     type Flip = fn(&mut ClassificationStats);
-    let rows: [(&str, Flip); 12] = [
+    let rows: [(&str, Flip); 13] = [
         ("fragment Horn (#124)", |s| {
             s.fragment = FragmentClassification::Horn;
         }),
@@ -191,8 +191,11 @@ fn each_condition_alone_voids_the_guarantee() {
         ("universal_role_ordinary (#543)", |s| {
             s.universal_role_ordinary = true;
         }),
+        ("data_case_split_risk (#589)", |s| {
+            s.data_case_split_risk = true;
+        }),
     ];
-    // Eleven conditions; the fragment condition has two failing values. Keep the
+    // Twelve conditions; the fragment condition has two failing values. Keep the
     // rows in step with the predicate and the ledger.
 
     for (name, flip) in rows {
@@ -213,6 +216,19 @@ fn a_proved_inconsistency_masks_the_universal_role_condition() {
     let s = ClassificationStats {
         fragment: FragmentClassification::PureEl,
         universal_role_ordinary: true,
+        inconsistent: true,
+        ..ClassificationStats::default()
+    };
+    assert!(s.completeness_guaranteed());
+}
+
+/// #589: a proved inconsistency masks condition 12, as it does condition 9.
+#[test]
+fn a_proved_inconsistency_masks_the_data_case_split_condition() {
+    use owl_dl_reasoner::{ClassificationStats, FragmentClassification};
+    let s = ClassificationStats {
+        fragment: FragmentClassification::PureEl,
+        data_case_split_risk: true,
         inconsistent: true,
         ..ClassificationStats::default()
     };

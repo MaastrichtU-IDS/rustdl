@@ -138,6 +138,7 @@ def test_result_is_a_read_only_mapping(tmp_path):
         "no_verdict",
         "dropped",
         "universal_role_ordinary",
+        "data_case_split_risk",
     }
     with pytest.raises(Exception):
         v.holds = False  # frozen

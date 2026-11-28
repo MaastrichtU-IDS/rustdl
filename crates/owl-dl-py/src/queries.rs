@@ -29,6 +29,7 @@ pub(crate) fn is_consistent(path: &str) -> PyResult<(bool, bool, bool, usize, us
             std::collections::BTreeMap::new(),
             stats.universal_role_ordinary,
             stats.universal_role_ordinary,
+            stats.data_case_split_risk,
         ));
     }
     Ok((
@@ -63,6 +64,7 @@ pub(crate) fn is_class_satisfiable(
             std::collections::BTreeMap::new(),
             stats.universal_role_ordinary,
             stats.universal_role_ordinary,
+            stats.data_case_split_risk,
         ));
     }
     Ok((
@@ -99,6 +101,7 @@ pub(crate) fn is_subclass_of(
             std::collections::BTreeMap::new(),
             stats.universal_role_ordinary,
             stats.universal_role_ordinary,
+            stats.data_case_split_risk,
         ));
     }
     Ok((
@@ -408,19 +411,40 @@ pub(crate) fn universal_role_ordinary(path: &str, role_level: bool) -> PyResult<
         .map_err(reason_error_to_py)
 }
 
-/// #597: `(dropped, universal_role_ordinary, universal_role_ordinary_for_roles)`
-/// for the ontology at `path`, from one parse and one conversion. The Python
-/// wrappers take these from the query's own native instead
-/// (`_take_conversion_notes`); this is their fallback, should a native not record
-/// them.
+/// #589: may the ontology at `path` need reasoning by cases over data values, which
+/// rustdl does not do? Set when some data range that is not a single value meets
+/// another range of its datatype without a seeded `⊑` into it (`C ⊑ ∃d.{1,2}` with
+/// `hasValue(d,1) ⊑ E` and `hasValue(d,2) ⊑ E` entails `C ⊑ E`, which is missed).
+/// Positive answers are sound; a negative answer or a missing entailment may be
+/// wrong. Parsed and converted, as `universal_role_ordinary`.
+#[pyfunction]
+pub(crate) fn data_case_split_risk(path: &str) -> PyResult<bool> {
+    let o = load::load_path(path)?;
+    owl_dl_reasoner::conversion_flags(&o)
+        .map(|f| f.data_case_split_risk)
+        .map_err(reason_error_to_py)
+}
+
+/// #597 / #589: `(dropped, universal_role_ordinary,
+/// universal_role_ordinary_for_roles, data_case_split_risk)` for the ontology at
+/// `path`, from one parse and one conversion. The Python wrappers take these from
+/// the query's own native instead (`_take_conversion_notes`); this is their
+/// fallback, should a native not record them.
 #[pyfunction]
 #[allow(clippy::type_complexity)]
 pub(crate) fn conversion_notes(
     path: &str,
-) -> PyResult<(std::collections::BTreeMap<String, u64>, bool, bool)> {
+) -> PyResult<(std::collections::BTreeMap<String, u64>, bool, bool, bool)> {
     let o = load::load_path(path)?;
-    owl_dl_reasoner::conversion_notes(&o)
-        .map(|(d, uro, for_roles)| (d.by_kind().clone(), uro, for_roles))
+    owl_dl_reasoner::conversion_flags(&o)
+        .map(|f| {
+            (
+                f.dropped.by_kind().clone(),
+                f.universal_role_ordinary,
+                f.universal_role_ordinary_for_roles,
+                f.data_case_split_risk,
+            )
+        })
         .map_err(reason_error_to_py)
 }
 
@@ -457,6 +481,8 @@ fn ce_verdict_dict<'py>(
     d.set_item("dropped", v.dropped().by_kind().clone())?;
     // #543: the probed conversion's, so a universal role in the query counts too.
     d.set_item("universal_role_ordinary", v.universal_role_ordinary())?;
+    // #589: the probed conversion's, so a data range in the query counts too.
+    d.set_item("data_case_split_risk", v.data_case_split_risk())?;
     Ok(d)
 }
 
@@ -525,6 +551,7 @@ pub(crate) fn class_expression_instances<'py>(
     d.set_item("depth_capped", r.depth_capped())?;
     d.set_item("dropped", r.dropped().by_kind().clone())?;
     d.set_item("universal_role_ordinary", r.universal_role_ordinary())?;
+    d.set_item("data_case_split_risk", r.data_case_split_risk())?;
     Ok(d)
 }
 
@@ -549,6 +576,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(class_expression_instances, m)?)?;
     m.add_function(wrap_pyfunction!(dropped_axioms, m)?)?;
     m.add_function(wrap_pyfunction!(universal_role_ordinary, m)?)?;
+    m.add_function(wrap_pyfunction!(data_case_split_risk, m)?)?;
     m.add_function(wrap_pyfunction!(conversion_notes, m)?)?;
     m.add_function(wrap_pyfunction!(load::take_conversion_notes, m)?)?;
     Ok(())

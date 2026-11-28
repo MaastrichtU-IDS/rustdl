@@ -22,5 +22,6 @@
     }
   ],
   "dropped": {},
-  "universal_role_ordinary": true
+  "universal_role_ordinary": true,
+  "data_case_split_risk": false
 }

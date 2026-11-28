@@ -66,6 +66,9 @@ pub(crate) struct Report {
     /// inconsistent ontology: the report's repairs are verified by negative answers,
     /// which the flag says may be wrong. Rendered as a banner.
     pub(crate) universal_role_ordinary: bool,
+    /// #589: a data range may need reasoning by cases rustdl does not do. Not masked,
+    /// for the same reason as `universal_role_ordinary`. Rendered as a banner.
+    pub(crate) data_case_split_risk: bool,
 }
 
 /// #625: the justification heading claims minimality only when it is guaranteed.
@@ -245,6 +248,14 @@ pub(crate) fn render_html(
              verified by one, may be wrong.</p>",
         );
     }
+    if report.data_case_split_risk {
+        h.push_str(
+            "<p style=\"border:1px solid #b45309;padding:.6em\"><strong>Data ranges:</strong> \
+             a data range here may need reasoning by cases (a range that is not a single value \
+             meets another of its datatype), which rustdl does not do. Positive answers are \
+             sound; a negative answer, and so a repair verified by one, may be wrong.</p>",
+        );
+    }
 
     if let Some(sec) = &report.inconsistency {
         h.push_str("<h2>Inconsistent ontology — responsible axioms</h2>");
@@ -352,6 +363,7 @@ pub(crate) fn build_report(
     // #619: the classification's conversion is the one the justifier and repairs use.
     let dropped = classification.stats().dropped.by_kind().clone();
     let universal_role_ordinary = classification.stats().universal_role_ordinary;
+    let data_case_split_risk = classification.stats().data_case_split_risk;
 
     let diag = owl_dl_reasoner::diagnose(onto).context("diagnose")?;
 
@@ -395,6 +407,7 @@ pub(crate) fn build_report(
             no_verdict,
             dropped,
             universal_role_ordinary,
+            data_case_split_risk,
         });
     }
 
@@ -460,6 +473,7 @@ pub(crate) fn build_report(
         no_verdict,
         dropped,
         universal_role_ordinary,
+        data_case_split_risk,
     })
 }
 
@@ -513,6 +527,7 @@ mod render_tests {
             no_verdict: false,
             dropped: std::collections::BTreeMap::new(),
             universal_role_ordinary: false,
+            data_case_split_risk: false,
         }
     }
 

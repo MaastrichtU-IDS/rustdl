@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "incomplete": false,
+  "depth_capped": false,
+  "witness_prune_active": true,
+  "witness_prune_may_drop": false,
+  "witness_prune_reasons": [],
+  "direct_types_unverified": false,
+  "direct_types_depth_capped": false,
+  "relies_on_trusted_consistency": true,
+  "no_verdict": false,
+  "saturation_only": false,
+  "individuals": [
+    {
+      "iri": "http://ex/#a",
+      "types": [
+        "http://ex/#A"
+      ],
+      "direct_types": [
+        "http://ex/#A"
+      ]
+    }
+  ],
+  "dropped": {},
+  "universal_role_ordinary": false,
+  "data_case_split_risk": true
+}

@@ -4018,6 +4018,8 @@ fn decompose_long_chains(out: &mut InternalOntology) {
 /// the number of distinct integer ranges (small in practice — bounded
 /// by the count of distinct facet/value combinations in the ontology).
 fn seed_dkey_subsumptions(out: &mut InternalOntology) {
+    // #589: the edges this pass seeds start here; the split-risk count reads only those.
+    let seeded_from = out.axioms.len();
     // Bucket DKeys BY DATATYPE so edges are seeded WITHIN a bucket. The one
     // cross-bucket edge is integer range ⊑ decimal range
     // (`seed_int_within_decimal`, #180): the integer value space IS a subset
@@ -4500,6 +4502,594 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
             &dec_oneof_dkeys,
             comp,
         );
+    }
+    // #589: after every `⊑` edge is seeded, count the keys that may need a case split.
+    // The enumeration keys are collected for it even when `RUSTDL_DKEY_ONEOF_SEED=0`
+    // left the seeding buckets empty: with no edges at all, they need the flag most.
+    let plain = plain_key.into_iter().collect::<Vec<_>>();
+    let all_oneofs = (!oneof_seed).then(|| {
+        (
+            collect_oneof_dkeys(out, true, parse_int_oneof_iri),
+            collect_oneof_dkeys(out, true, parse_float_oneof_iri),
+            collect_oneof_dkeys(out, true, parse_double_oneof_iri),
+            collect_oneof_dkeys(out, true, parse_decimal_oneof_iri),
+            collect_oneof_dkeys(out, true, parse_date_oneof_iri),
+            collect_oneof_dkeys(out, true, parse_datetime_oneof_iri),
+        )
+    });
+    let (int_o, float_o, double_o, dec_o, date_o, dt_o) = match &all_oneofs {
+        Some((io, fo, dbo, deo, dao, dto)) => {
+            (&io[..], &fo[..], &dbo[..], &deo[..], &dao[..], &dto[..])
+        }
+        None => (
+            &int_oneof_dkeys[..],
+            &float_oneof_dkeys[..],
+            &double_oneof_dkeys[..],
+            &dec_oneof_dkeys[..],
+            &date_oneof_dkeys[..],
+            &dt_oneof_dkeys[..],
+        ),
+    };
+    out.dkey_split_risk_keys = count_dkey_split_risks(
+        out,
+        seeded_from,
+        &SplitBuckets {
+            int: &int_dkeys,
+            int_oneof: int_o,
+            dec: &dec_dkeys,
+            dec_oneof: dec_o,
+            float: &float_dkeys,
+            float_oneof: float_o,
+            double: &double_dkeys,
+            double_oneof: double_o,
+            date: &date_dkeys,
+            date_oneof: date_o,
+            dt: &dt_dkeys,
+            dt_oneof: dt_o,
+            str: &str_dkeys,
+            lang: &lang_dkeys,
+            bool: &bool_dkeys,
+            uri: &uri_dkeys,
+            plain: &plain,
+        },
+    );
+}
+
+/// #589: whether some data key of `out` may need reasoning by cases that no engine
+/// does (`InternalOntology::dkey_split_risk_keys` is non-zero): a key that is not a
+/// single value meets another key of its value space without a seeded `⊑` edge into it.
+/// The engines treat data keys as atoms, so an entailment that needs the value-level
+/// split (`∃d.{1,2}`, `hasValue(d,1) ⊑ E`, `hasValue(d,2) ⊑ E` ⟹ `∃d.{1,2} ⊑ E`) is
+/// missed, while the pure-EL gate would certify the closure complete. Every surface
+/// that reports `dropped` voids its completeness claim on it.
+#[must_use]
+pub fn data_case_split_risk(out: &InternalOntology) -> bool {
+    out.dkey_split_risk_keys > 0
+}
+
+/// #589: the typed `DKey` buckets of one ontology, as `seed_dkey_subsumptions` built them.
+struct SplitBuckets<'a> {
+    int: &'a [(ClassId, IntSet)],
+    int_oneof: &'a [(ClassId, std::collections::BTreeSet<i64>)],
+    dec: &'a [(ClassId, OrdRange<Decimal>)],
+    dec_oneof: &'a [(ClassId, std::collections::BTreeSet<Decimal>)],
+    float: &'a [(ClassId, FloatRange)],
+    float_oneof: &'a [(
+        ClassId,
+        std::collections::BTreeSet<crate::data_axioms::OrdF64>,
+    )],
+    double: &'a [(ClassId, FloatRange)],
+    double_oneof: &'a [(
+        ClassId,
+        std::collections::BTreeSet<crate::data_axioms::OrdF64>,
+    )],
+    date: &'a [(ClassId, OrdRange<DateKey>)],
+    date_oneof: &'a [(ClassId, std::collections::BTreeSet<DateKey>)],
+    dt: &'a [(ClassId, OrdRange<DateTimeKey>)],
+    dt_oneof: &'a [(ClassId, std::collections::BTreeSet<DateTimeKey>)],
+    str: &'a [(ClassId, StrSet)],
+    lang: &'a [(ClassId, LangSet)],
+    bool: &'a [(ClassId, StrSet)],
+    uri: &'a [(ClassId, StrSet)],
+    plain: &'a [ClassId],
+}
+
+/// #589: one key of a value space, as the split-risk detector sees it.
+enum SplitKey<'a> {
+    Int(&'a IntSet),
+    IntPts(&'a std::collections::BTreeSet<i64>),
+    Dec(&'a OrdRange<Decimal>),
+    DecPts(&'a std::collections::BTreeSet<Decimal>),
+    /// The range, and whether it is `xsd:float` (single precision) rather than double.
+    Float(FloatRange, bool),
+    FloatPts(&'a std::collections::BTreeSet<crate::data_axioms::OrdF64>),
+    Date(&'a OrdRange<DateKey>),
+    DatePts(&'a std::collections::BTreeSet<DateKey>),
+    Dt(&'a OrdRange<DateTimeKey>),
+    DtPts(&'a std::collections::BTreeSet<DateTimeKey>),
+    Str(&'a StrSet),
+    Lang(&'a LangSet),
+    /// `rdf:PlainLiteral`: every string and every language-tagged string.
+    Plain,
+}
+
+impl SplitKey<'_> {
+    /// One value exactly. An IEEE zero is two values (the buckets merge `-0` and `+0`),
+    /// so a zero point is not one.
+    fn is_point(&self) -> bool {
+        let nonzero = |v: f64| v.total_cmp(&0.0).is_ne() && v.total_cmp(&-0.0).is_ne();
+        match self {
+            SplitKey::Int(s) => enumerate_int_set(s, 1).is_some_and(|v| v.len() == 1),
+            SplitKey::IntPts(s) => s.len() == 1,
+            SplitKey::Dec(r) => decimal_point(r).is_some(),
+            SplitKey::DecPts(s) => s.len() == 1,
+            SplitKey::Float(r, _) => float_range_nonzero_point(r, 1).is_some(),
+            SplitKey::FloatPts(s) => s.len() == 1 && s.iter().all(|v| nonzero(v.0)),
+            SplitKey::Date(r) => ord_range_point(r, 1).is_some(),
+            SplitKey::DatePts(s) => s.len() == 1,
+            SplitKey::Dt(r) => ord_range_point(r, 1).is_some(),
+            SplitKey::DtPts(s) => s.len() == 1,
+            SplitKey::Str(StrSet::Set(s)) => s.len() == 1,
+            SplitKey::Lang(LangSet::Set(s)) => s.len() == 1,
+            SplitKey::Str(StrSet::Top) | SplitKey::Lang(LangSet::Top) | SplitKey::Plain => false,
+        }
+    }
+
+    /// No value at all: `int[5,1]`, an exclusive `(1,2)`, `decimal(1.0, 1.0]`, or float
+    /// bounds with no representable value strictly between them. Such a key needs no
+    /// split, but the engines treat it as an atom like any other, so `C ⊑ ∃d.int[5,1]`
+    /// leaves `C` satisfiable where it is not: the same certified miss, so it counts.
+    fn is_empty(&self) -> bool {
+        match self {
+            SplitKey::Int(s) => s
+                .ranges()
+                .iter()
+                .all(|r| matches!((r.min, r.max), (Some(lo), Some(hi)) if lo > hi)),
+            SplitKey::IntPts(s) => s.is_empty(),
+            SplitKey::Dec(r) => r.is_empty(),
+            SplitKey::DecPts(s) => s.is_empty(),
+            SplitKey::Float(r, single) => float_range_holds_nothing(*r, *single),
+            SplitKey::FloatPts(s) => s.is_empty(),
+            SplitKey::Date(r) => r.is_empty(),
+            SplitKey::DatePts(s) => s.is_empty(),
+            SplitKey::Dt(r) => r.is_empty(),
+            SplitKey::DtPts(s) => s.is_empty(),
+            SplitKey::Str(StrSet::Set(s)) => s.is_empty(),
+            SplitKey::Lang(LangSet::Set(s)) => s.is_empty(),
+            SplitKey::Str(StrSet::Top) | SplitKey::Lang(LangSet::Top) | SplitKey::Plain => false,
+        }
+    }
+
+    /// Whether the two keys may share a value. `true` wherever it is not decided
+    /// exactly: a wrong `true` only flags one key too many.
+    fn may_meet(&self, other: &Self) -> bool {
+        use SplitKey as K;
+        let int_hull_meets = |s: &IntSet, d: &OrdRange<Decimal>| {
+            s.ranges().iter().any(|r| {
+                let hull = OrdRange {
+                    min: r.min.and_then(int_as_decimal),
+                    min_incl: true,
+                    max: r.max.and_then(int_as_decimal),
+                    max_incl: true,
+                };
+                // An unparseable bound reads as unbounded: wider, so "meets" errs safe.
+                !hull.disjoint(d)
+            })
+        };
+        match (self, other) {
+            (K::Int(a), K::Int(b)) => !a.disjoint(b),
+            (K::Int(a), K::IntPts(p)) | (K::IntPts(p), K::Int(a)) => {
+                p.iter().any(|v| a.contains(*v))
+            }
+            (K::Int(a), K::Dec(d)) | (K::Dec(d), K::Int(a)) => int_hull_meets(a, d),
+            // A fractional decimal is no integer. A whole one past `i64` is undecided
+            // (`decimal_as_int` gives `None`), so it counts as meeting, like every other
+            // undecided arm: `{1e20, 2e20}` against `nonNegativeInteger` needs the split
+            // (Fable review of #639, `pBa`).
+            (K::Int(a), K::DecPts(p)) | (K::DecPts(p), K::Int(a)) => p
+                .iter()
+                .any(|v| v.frac.is_empty() && decimal_as_int(v).is_none_or(|i| a.contains(i))),
+            (K::IntPts(a), K::IntPts(b)) => !a.is_disjoint(b),
+            (K::IntPts(a), K::Dec(d)) | (K::Dec(d), K::IntPts(a)) => a
+                .iter()
+                .any(|v| int_as_decimal(*v).is_none_or(|x| d.contains(&x))),
+            (K::IntPts(a), K::DecPts(p)) | (K::DecPts(p), K::IntPts(a)) => a
+                .iter()
+                .any(|v| int_as_decimal(*v).is_none_or(|x| p.contains(&x))),
+            (K::Dec(a), K::Dec(b)) => !a.disjoint(b),
+            (K::Dec(a), K::DecPts(p)) | (K::DecPts(p), K::Dec(a)) => {
+                p.iter().any(|v| a.contains(v))
+            }
+            (K::DecPts(a), K::DecPts(b)) => !a.is_disjoint(b),
+            (K::Float(a, _), K::Float(b, _)) => !a.disjoint(*b),
+            (K::Float(a, _), K::FloatPts(p)) | (K::FloatPts(p), K::Float(a, _)) => {
+                p.iter().any(|v| a.contains(v.0))
+            }
+            (K::FloatPts(a), K::FloatPts(b)) => !a.is_disjoint(b),
+            (K::Date(a), K::Date(b)) => !a.disjoint(b),
+            (K::Date(a), K::DatePts(p)) | (K::DatePts(p), K::Date(a)) => {
+                p.iter().any(|v| a.contains(v))
+            }
+            (K::DatePts(a), K::DatePts(b)) => !a.is_disjoint(b),
+            (K::Dt(a), K::Dt(b)) => !a.disjoint(b),
+            (K::Dt(a), K::DtPts(p)) | (K::DtPts(p), K::Dt(a)) => p.iter().any(|v| a.contains(v)),
+            (K::DtPts(a), K::DtPts(b)) => !a.is_disjoint(b),
+            (K::Str(a), K::Str(b)) => !a.disjoint(b),
+            (K::Lang(a), K::Lang(b)) => !a.disjoint(b),
+            // Undecided pairs (only the plain key here): assume they meet.
+            _ => true,
+        }
+    }
+}
+
+/// #589: an IEEE range with no representable value: crossed bounds, or exclusive bounds
+/// with nothing between them in the type's precision (`float(1.0, 1.0000001)` holds no
+/// `f32`). The bounds of an `xsd:float` range are `f32` values widened to `f64`.
+fn float_range_holds_nothing(r: FloatRange, single: bool) -> bool {
+    if r.is_empty() {
+        return true;
+    }
+    let (Some(lo), Some(hi)) = (r.min, r.max) else {
+        return false;
+    };
+    #[allow(clippy::cast_possible_truncation)]
+    let (lo, hi) = if single {
+        let (l, h) = (lo as f32, hi as f32);
+        (
+            f64::from(if r.min_incl { l } else { l.next_up() }),
+            f64::from(if r.max_incl { h } else { h.next_down() }),
+        )
+    } else {
+        (
+            if r.min_incl { lo } else { lo.next_up() },
+            if r.max_incl { hi } else { hi.next_down() },
+        )
+    };
+    lo > hi
+}
+
+/// #589: count the `DKey` classes that may need reasoning by cases. A key `K` is
+/// counted when it is not a single value and some other key `K'` of the same value
+/// space may meet it while no `K ⊑ K'` edge was seeded. "Seeded", not semantic
+/// inclusion: a true inclusion `seed_dkey_subsumptions` leaves out (#588's zero at an
+/// IEEE bound, ordered ranges finite only as points) is the same gap and must count.
+///
+/// Every miss of #589 and its plan review needs such a pair: a key covered by others
+/// (`∃d.{1,2}`, `hasValue(d,1)`, `hasValue(d,2)`), a range narrowing a filler
+/// (`Range(d, ≥0)`, `∃d.(≤1)`), a boolean or string set against its points, float
+/// neighbours. Role-blind (two keys on unrelated properties count) and polarity-blind,
+/// so it over-flags; it never changes an answer, only the certificate.
+fn count_dkey_split_risks(
+    out: &InternalOntology,
+    seeded_from: usize,
+    b: &SplitBuckets<'_>,
+) -> usize {
+    use SplitKey as K;
+    let ids: std::collections::HashSet<ClassId> = [
+        b.int.iter().map(|(c, _)| *c).collect::<Vec<_>>(),
+        b.int_oneof.iter().map(|(c, _)| *c).collect(),
+        b.dec.iter().map(|(c, _)| *c).collect(),
+        b.dec_oneof.iter().map(|(c, _)| *c).collect(),
+        b.float.iter().map(|(c, _)| *c).collect(),
+        b.float_oneof.iter().map(|(c, _)| *c).collect(),
+        b.double.iter().map(|(c, _)| *c).collect(),
+        b.double_oneof.iter().map(|(c, _)| *c).collect(),
+        b.date.iter().map(|(c, _)| *c).collect(),
+        b.date_oneof.iter().map(|(c, _)| *c).collect(),
+        b.dt.iter().map(|(c, _)| *c).collect(),
+        b.dt_oneof.iter().map(|(c, _)| *c).collect(),
+        b.str.iter().map(|(c, _)| *c).collect(),
+        b.lang.iter().map(|(c, _)| *c).collect(),
+        b.bool.iter().map(|(c, _)| *c).collect(),
+        b.uri.iter().map(|(c, _)| *c).collect(),
+        b.plain.to_vec(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    // The `DKey ⊑ DKey` edges `seed_dkey_subsumptions` emitted: only its own axioms are
+    // read (an ontology can hold millions of others; `ore_ont_5368` has 18.6 M). A
+    // hand-written edge between synthetic `DKey` IRIs is not a seeded one, so ignoring
+    // it only flags more.
+    let mut told: std::collections::HashSet<(ClassId, ClassId)> = std::collections::HashSet::new();
+    for ax in &out.axioms[seeded_from.min(out.axioms.len())..] {
+        if let Axiom::SubClassOf { sub, sup } = ax
+            && let (ConceptExpr::Atomic(a), ConceptExpr::Atomic(c)) =
+                (out.concepts.get(*sub), out.concepts.get(*sup))
+            && ids.contains(a)
+            && ids.contains(c)
+        {
+            told.insert((*a, *c));
+        }
+    }
+    let mut flagged: std::collections::HashSet<ClassId> = std::collections::HashSet::new();
+    let mut numeric: Vec<(ClassId, K<'_>)> = Vec::new();
+    numeric.extend(b.int.iter().map(|(c, r)| (*c, K::Int(r))));
+    numeric.extend(b.int_oneof.iter().map(|(c, s)| (*c, K::IntPts(s))));
+    numeric.extend(b.dec.iter().map(|(c, r)| (*c, K::Dec(r))));
+    numeric.extend(b.dec_oneof.iter().map(|(c, s)| (*c, K::DecPts(s))));
+    scan_ordered(&numeric, numeric_hull, &told, &mut flagged);
+    for (ranges, oneofs, single) in [
+        (b.float, b.float_oneof, true),
+        (b.double, b.double_oneof, false),
+    ] {
+        let mut space: Vec<(ClassId, K<'_>)> = ranges
+            .iter()
+            .map(|(c, r)| (*c, K::Float(*r, single)))
+            .collect();
+        space.extend(oneofs.iter().map(|(c, s)| (*c, K::FloatPts(s))));
+        scan_ordered(&space, float_hull, &told, &mut flagged);
+    }
+    let mut date: Vec<(ClassId, K<'_>)> = b.date.iter().map(|(c, r)| (*c, K::Date(r))).collect();
+    date.extend(b.date_oneof.iter().map(|(c, s)| (*c, K::DatePts(s))));
+    scan_ordered(&date, date_hull, &told, &mut flagged);
+    let mut dt: Vec<(ClassId, K<'_>)> = b.dt.iter().map(|(c, r)| (*c, K::Dt(r))).collect();
+    dt.extend(b.dt_oneof.iter().map(|(c, s)| (*c, K::DtPts(s))));
+    scan_ordered(&dt, datetime_hull, &told, &mut flagged);
+    // Strings and language-tagged strings, with `rdf:PlainLiteral` over both. A bare
+    // `rdf:langString` (`LangSet::Top`) joins the string space too: `HermiT` and Konclude
+    // read it as holding plain strings (see the family-disjointness note above), and
+    // no `str ⊑ lang` edge is seeded, so `hasValue(d,"a")` against `∃d.rdf:langString`
+    // is a miss relative to them. Undecided `Str`/`Lang` pairs count as meeting.
+    let mut text: Vec<(ClassId, K<'_>)> = b.str.iter().map(|(c, s)| (*c, K::Str(s))).collect();
+    text.extend(b.plain.iter().map(|c| (*c, K::Plain)));
+    text.extend(
+        b.lang
+            .iter()
+            .filter(|(_, s)| matches!(s, LangSet::Top))
+            .map(|(c, s)| (*c, K::Lang(s))),
+    );
+    scan_text(&text, &told, &mut flagged);
+    let mut lang: Vec<(ClassId, K<'_>)> = b.lang.iter().map(|(c, s)| (*c, K::Lang(s))).collect();
+    lang.extend(b.plain.iter().map(|c| (*c, K::Plain)));
+    scan_text(&lang, &told, &mut flagged);
+    for bucket in [b.bool, b.uri] {
+        let space: Vec<(ClassId, K<'_>)> = bucket.iter().map(|(c, s)| (*c, K::Str(s))).collect();
+        scan_text(&space, &told, &mut flagged);
+    }
+    flagged.len()
+}
+
+/// #589: the keys of one value space and the seeded edges, as both scans read them.
+type SplitSpace<'a, 'k> = &'a [(ClassId, SplitKey<'k>)];
+type ToldEdges = std::collections::HashSet<(ClassId, ClassId)>;
+
+/// #589: whether `space[i]` meets `space[j]` with no seeded edge from it: the counting
+/// rule, decided exactly once a scan has proposed the pair.
+fn splits_against(space: SplitSpace<'_, '_>, told: &ToldEdges, i: usize, j: usize) -> bool {
+    let ((ki, a), (kj, c)) = (&space[i], &space[j]);
+    i != j && ki != kj && a.may_meet(c) && !told.contains(&(*ki, *kj))
+}
+
+/// #589: the keys `space` counts before any pair is looked at: an empty key always, a
+/// point never. Returns the indices left to test against their partners.
+fn split_candidates(
+    space: SplitSpace<'_, '_>,
+    flagged: &mut std::collections::HashSet<ClassId>,
+) -> Vec<usize> {
+    let mut out = Vec::new();
+    for (i, (k, a)) in space.iter().enumerate() {
+        if flagged.contains(k) {
+            continue;
+        }
+        if a.is_empty() {
+            flagged.insert(*k);
+        } else if !a.is_point() {
+            out.push(i);
+        }
+    }
+    out
+}
+
+/// A closed hull `(lo, hi)` of a key's values; `None` is unbounded on that side.
+type Hull<T> = (Option<T>, Option<T>);
+
+/// #589: the counting rule over an ordered value space, indexed. Every pair that may meet
+/// has overlapping hulls, so a candidate is tested only against the keys whose hull
+/// overlaps its own, found by binary search over the keys sorted by lower bound (those
+/// starting inside the candidate's hull) and a walk back while the prefix maximum of the
+/// upper bounds still reaches it (those starting before). The exact test then decides,
+/// so 20,000 disjoint integer ranges no longer cost 20,000² comparisons (Fable review of
+/// #639).
+///
+/// It flags every key the all-pairs scan flags, except in two corners where the skipped
+/// partner shares no value with the key: an empty partner (not indexed, and flagged
+/// itself), and an integer key against whole decimals past `i64` (`integer[0,5]` against
+/// `{1e20, 2e20}`), which `may_meet` calls undecided while the hulls are disjoint. It
+/// never flags a key the all-pairs scan does not. Pinned on seeded random spaces against
+/// a reference all-pairs scan (`split_scan_differential`).
+fn scan_ordered<T: Ord + Clone>(
+    space: SplitSpace<'_, '_>,
+    hull: fn(&SplitKey<'_>) -> Option<Hull<T>>,
+    told: &ToldEdges,
+    flagged: &mut std::collections::HashSet<ClassId>,
+) {
+    let candidates = split_candidates(space, flagged);
+    if candidates.is_empty() {
+        return;
+    }
+    let hulls: Vec<Option<Hull<T>>> = space.iter().map(|(_, k)| hull(k)).collect();
+    // A missing lower bound is -∞, a missing upper bound +∞; `x` is always finite here.
+    let lo_lt = |lo: &Option<T>, x: &T| lo.as_ref().is_none_or(|v| v < x);
+    let lo_le = |lo: &Option<T>, x: &T| lo.as_ref().is_none_or(|v| v <= x);
+    let reaches = |hi: &Option<T>, x: &T| hi.as_ref().is_none_or(|v| v >= x);
+    let mut order: Vec<usize> = (0..space.len()).filter(|&j| hulls[j].is_some()).collect();
+    let lo_of = |j: usize| &hulls[j].as_ref().expect("indexed keys have a hull").0;
+    let hi_of = |j: usize| &hulls[j].as_ref().expect("indexed keys have a hull").1;
+    order.sort_by(|&x, &y| match (lo_of(x), lo_of(y)) {
+        (None, None) => std::cmp::Ordering::Equal,
+        (None, Some(_)) => std::cmp::Ordering::Less,
+        (Some(_), None) => std::cmp::Ordering::Greater,
+        (Some(a), Some(b)) => a.cmp(b),
+    });
+    // prefix_hi[k]: the largest upper bound among order[..=k] (`None` = +∞).
+    let mut prefix_hi: Vec<Option<T>> = Vec::with_capacity(order.len());
+    for &j in &order {
+        let next = match (prefix_hi.last(), hi_of(j)) {
+            (None, h) => h.clone(),
+            (Some(None), _) | (_, None) => None,
+            (Some(Some(a)), Some(b)) => Some(if b > a { b.clone() } else { a.clone() }),
+        };
+        prefix_hi.push(next);
+    }
+    for i in candidates {
+        let Some((lo, hi)) = &hulls[i] else {
+            // No hull to index by (cannot happen for a non-empty key): test every key.
+            if (0..space.len()).any(|j| splits_against(space, told, i, j)) {
+                flagged.insert(space[i].0);
+            }
+            continue;
+        };
+        let start = lo
+            .as_ref()
+            .map_or(0, |l| order.partition_point(|&j| lo_lt(lo_of(j), l)));
+        let end = hi.as_ref().map_or(order.len(), |h| {
+            order.partition_point(|&j| lo_le(lo_of(j), h))
+        });
+        let mut hit = order[start..end.max(start)]
+            .iter()
+            .any(|&j| splits_against(space, told, i, j));
+        if !hit && let Some(l) = lo {
+            for k in (0..start).rev() {
+                if !reaches(&prefix_hi[k], l) {
+                    break;
+                }
+                let j = order[k];
+                if reaches(hi_of(j), l) && splits_against(space, told, i, j) {
+                    hit = true;
+                    break;
+                }
+            }
+        }
+        if hit {
+            flagged.insert(space[i].0);
+        }
+    }
+}
+
+/// #589: the counting rule over a string-like value space, indexed by value: a candidate
+/// set is tested against the keys that share one of its values and against the keys that
+/// hold every value (`xsd:string`, `rdf:PlainLiteral`, bare `rdf:langString`). Main's
+/// string seeding is size-indexed for the same reason (Fable review of #639: 20,000
+/// two-string enumerations cost 8.6× without it). Its flagged keys are exactly the
+/// all-pairs scan's (`split_scan_differential`).
+fn scan_text(
+    space: SplitSpace<'_, '_>,
+    told: &ToldEdges,
+    flagged: &mut std::collections::HashSet<ClassId>,
+) {
+    let candidates = split_candidates(space, flagged);
+    if candidates.is_empty() {
+        return;
+    }
+    let values = |k: &SplitKey<'_>| -> Option<Vec<String>> {
+        match k {
+            SplitKey::Str(StrSet::Set(s)) => Some(s.iter().cloned().collect()),
+            SplitKey::Lang(LangSet::Set(s)) => {
+                Some(s.iter().map(|(lex, tag)| format!("{lex}@{tag}")).collect())
+            }
+            _ => None,
+        }
+    };
+    let mut by_value: std::collections::HashMap<String, Vec<usize>> =
+        std::collections::HashMap::new();
+    let mut universal: Vec<usize> = Vec::new();
+    for (j, (_, k)) in space.iter().enumerate() {
+        match values(k) {
+            Some(vs) => {
+                for v in vs {
+                    by_value.entry(v).or_default().push(j);
+                }
+            }
+            None => universal.push(j),
+        }
+    }
+    for i in candidates {
+        let hit = match values(&space[i].1) {
+            None => (0..space.len()).any(|j| splits_against(space, told, i, j)),
+            Some(vs) => {
+                universal.iter().any(|&j| splits_against(space, told, i, j))
+                    || vs.iter().any(|v| {
+                        by_value
+                            .get(v)
+                            .is_some_and(|js| js.iter().any(|&j| splits_against(space, told, i, j)))
+                    })
+            }
+        };
+        if hit {
+            flagged.insert(space[i].0);
+        }
+    }
+}
+
+/// #589: hulls of the integer/decimal space, in decimals (an integer bound that does not
+/// convert reads as unbounded, which only widens the hull).
+fn numeric_hull(k: &SplitKey<'_>) -> Option<Hull<Decimal>> {
+    match k {
+        SplitKey::Int(s) => {
+            let comps: Vec<_> = s
+                .ranges()
+                .iter()
+                .filter(|r| !matches!((r.min, r.max), (Some(lo), Some(hi)) if lo > hi))
+                .collect();
+            if comps.is_empty() {
+                return None;
+            }
+            let lo = if comps.iter().any(|r| r.min.is_none()) {
+                None
+            } else {
+                comps
+                    .iter()
+                    .filter_map(|r| r.min)
+                    .min()
+                    .and_then(int_as_decimal)
+            };
+            let hi = if comps.iter().any(|r| r.max.is_none()) {
+                None
+            } else {
+                comps
+                    .iter()
+                    .filter_map(|r| r.max)
+                    .max()
+                    .and_then(int_as_decimal)
+            };
+            Some((lo, hi))
+        }
+        SplitKey::IntPts(p) => Some((
+            p.first().and_then(|v| int_as_decimal(*v)),
+            p.last().and_then(|v| int_as_decimal(*v)),
+        )),
+        SplitKey::Dec(r) => Some((r.min.clone(), r.max.clone())),
+        SplitKey::DecPts(p) => Some((p.first().cloned(), p.last().cloned())),
+        _ => Some((None, None)),
+    }
+}
+
+/// #589: hulls of an IEEE space (float or double).
+fn float_hull(k: &SplitKey<'_>) -> Option<Hull<crate::data_axioms::OrdF64>> {
+    use crate::data_axioms::OrdF64;
+    match k {
+        SplitKey::Float(r, _) => Some((r.min.map(OrdF64::new), r.max.map(OrdF64::new))),
+        SplitKey::FloatPts(p) => Some((p.first().copied(), p.last().copied())),
+        _ => Some((None, None)),
+    }
+}
+
+/// #589: hulls of the `xsd:date` space.
+fn date_hull(k: &SplitKey<'_>) -> Option<Hull<DateKey>> {
+    match k {
+        SplitKey::Date(r) => Some((r.min, r.max)),
+        SplitKey::DatePts(p) => Some((p.first().copied(), p.last().copied())),
+        _ => Some((None, None)),
+    }
+}
+
+/// #589: hulls of the `xsd:dateTime` space.
+fn datetime_hull(k: &SplitKey<'_>) -> Option<Hull<DateTimeKey>> {
+    match k {
+        SplitKey::Dt(r) => Some((r.min, r.max)),
+        SplitKey::DtPts(p) => Some((p.first().copied(), p.last().copied())),
+        _ => Some((None, None)),
     }
 }
 
@@ -8664,5 +9254,315 @@ mod tests {
             3,
             "a functional data property is merge-inducing: all 3 pairs must be seeded"
         );
+    }
+}
+
+/// #589 (Fable delta review of #639): the indexed scans against a reference all-pairs
+/// scan, on seeded random value spaces, compared as flagged KEY sets (a file-level
+/// differential cannot show a key the index skipped while another key kept the file
+/// flagged).
+#[cfg(test)]
+mod split_scan_differential {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use crate::data_axioms::OrdF64;
+    use std::collections::{BTreeSet, HashSet};
+
+    /// xorshift64*: deterministic, no dependency.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+        fn below(&mut self, n: u64) -> u64 {
+            self.next() % n
+        }
+        fn int(&mut self, lo: i64, hi: i64) -> i64 {
+            lo + i64::try_from(self.below(u64::try_from(hi - lo + 1).unwrap())).unwrap()
+        }
+        fn chance(&mut self, pct: u64) -> bool {
+            self.below(100) < pct
+        }
+    }
+
+    /// The scan #639 replaced: every candidate against every key.
+    fn all_pairs(space: SplitSpace<'_, '_>, told: &ToldEdges) -> HashSet<ClassId> {
+        let mut flagged = HashSet::new();
+        for i in split_candidates(space, &mut flagged) {
+            if (0..space.len()).any(|j| splits_against(space, told, i, j)) {
+                flagged.insert(space[i].0);
+            }
+        }
+        flagged
+    }
+
+    fn random_told(rng: &mut Rng, n: usize) -> ToldEdges {
+        let mut told = HashSet::new();
+        for i in 0..n {
+            for j in 0..n {
+                if i != j && rng.chance(15) {
+                    told.insert((cid(i), cid(j)));
+                }
+            }
+        }
+        told
+    }
+
+    fn cid(i: usize) -> ClassId {
+        ClassId::new(u32::try_from(i).unwrap())
+    }
+
+    fn overlap<T: Ord>(a: &Hull<T>, b: &Hull<T>) -> bool {
+        let le = |lo: &Option<T>, hi: &Option<T>| match (lo, hi) {
+            (Some(l), Some(h)) => l <= h,
+            _ => true,
+        };
+        le(&a.0, &b.1) && le(&b.0, &a.1)
+    }
+
+    /// Index ⊆ all-pairs, and every key all-pairs flags but the index does not has only
+    /// partners whose hulls do not overlap its own: the two documented corners (an empty
+    /// partner, which is not indexed but is flagged itself, and a whole decimal past
+    /// `i64` that the integer arm calls undecided while the hulls are disjoint). Neither
+    /// shares a value with the key.
+    fn check_ordered<T: Ord + Clone>(
+        space: SplitSpace<'_, '_>,
+        hull: fn(&SplitKey<'_>) -> Option<Hull<T>>,
+        told: &ToldEdges,
+        what: &str,
+    ) {
+        let reference = all_pairs(space, told);
+        let mut indexed = HashSet::new();
+        scan_ordered(space, hull, told, &mut indexed);
+        assert!(
+            indexed.is_subset(&reference),
+            "{what}: the index flagged extra keys"
+        );
+        for (i, (k, a)) in space.iter().enumerate() {
+            if reference.contains(k) && !indexed.contains(k) {
+                let hi = hull(a).unwrap();
+                for j in 0..space.len() {
+                    if splits_against(space, told, i, j) {
+                        let hj = hull(&space[j].1);
+                        assert!(
+                            hj.as_ref().is_none_or(|hj| !overlap(&hi, hj)),
+                            "{what}: key {i} skipped with an overlapping partner {j}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn check_text(space: SplitSpace<'_, '_>, told: &ToldEdges, what: &str) {
+        let reference = all_pairs(space, told);
+        let mut indexed = HashSet::new();
+        scan_text(space, told, &mut indexed);
+        assert_eq!(indexed, reference, "{what}");
+    }
+
+    fn decimal(rng: &mut Rng) -> Decimal {
+        let s = match rng.below(4) {
+            0 => format!("{}", rng.int(-12, 12)),
+            1 => format!("{}.5", rng.int(-12, 12)),
+            2 => format!("{}00000000000000000000", rng.int(1, 3)),
+            _ => format!("-{}00000000000000000000", rng.int(1, 3)),
+        };
+        parse_decimal(&s).unwrap()
+    }
+
+    fn bound<T>(rng: &mut Rng, v: T) -> Option<T> {
+        (!rng.chance(10)).then_some(v)
+    }
+
+    #[test]
+    fn the_numeric_index_misses_no_overlapping_pair() {
+        let mut rng = Rng(0x589_639);
+        for round in 0..3000 {
+            let n = usize::try_from(rng.int(2, 10)).unwrap();
+            let mut ints = Vec::new();
+            let mut int_pts = Vec::new();
+            let mut decs = Vec::new();
+            let mut dec_pts = Vec::new();
+            for _ in 0..n {
+                match rng.below(4) {
+                    0 => {
+                        let lo = rng.int(-12, 12);
+                        let hi = lo + rng.int(-2, 8);
+                        let (min, max) = (bound(&mut rng, lo), bound(&mut rng, hi));
+                        ints.push(IntSet::single(IntegerRange { min, max }));
+                    }
+                    1 => int_pts.push((0..rng.int(1, 3)).map(|_| rng.int(-12, 12)).collect()),
+                    2 => {
+                        let (a, b) = (decimal(&mut rng), decimal(&mut rng));
+                        let (lo, hi) = if a <= b || rng.chance(10) {
+                            (a, b)
+                        } else {
+                            (b, a)
+                        };
+                        decs.push(OrdRange {
+                            min: bound(&mut rng, lo),
+                            min_incl: rng.chance(50),
+                            max: bound(&mut rng, hi),
+                            max_incl: rng.chance(50),
+                        });
+                    }
+                    _ => {
+                        let set: BTreeSet<Decimal> =
+                            (0..rng.int(1, 3)).map(|_| decimal(&mut rng)).collect();
+                        dec_pts.push(set);
+                    }
+                }
+            }
+            let mut space: Vec<(ClassId, SplitKey<'_>)> = Vec::new();
+            space.extend(
+                ints.iter()
+                    .enumerate()
+                    .map(|(k, s)| (cid(k), SplitKey::Int(s))),
+            );
+            let base = space.len();
+            space.extend(
+                int_pts
+                    .iter()
+                    .enumerate()
+                    .map(|(k, s)| (cid(base + k), SplitKey::IntPts(s))),
+            );
+            let base = space.len();
+            space.extend(
+                decs.iter()
+                    .enumerate()
+                    .map(|(k, r)| (cid(base + k), SplitKey::Dec(r))),
+            );
+            let base = space.len();
+            space.extend(
+                dec_pts
+                    .iter()
+                    .enumerate()
+                    .map(|(k, s)| (cid(base + k), SplitKey::DecPts(s))),
+            );
+            let told = random_told(&mut rng, space.len());
+            check_ordered(
+                &space,
+                numeric_hull,
+                &told,
+                &format!("numeric round {round}"),
+            );
+        }
+    }
+
+    #[test]
+    fn the_float_index_misses_no_overlapping_pair() {
+        let mut rng = Rng(0x589_640);
+        let pool = [-2.0, -1.0, -0.0, 0.0, 0.5, 1.0, 1.000_000_1, 2.0, 3.5];
+        let pick = |rng: &mut Rng| pool[usize::try_from(rng.below(pool.len() as u64)).unwrap()];
+        for round in 0..3000 {
+            let n = usize::try_from(rng.int(2, 10)).unwrap();
+            let single = rng.chance(50);
+            let mut ranges = Vec::new();
+            let mut pts: Vec<BTreeSet<OrdF64>> = Vec::new();
+            for _ in 0..n {
+                if rng.chance(60) {
+                    let (a, b) = (pick(&mut rng), pick(&mut rng));
+                    let (lo, hi) = if a <= b || rng.chance(10) {
+                        (a, b)
+                    } else {
+                        (b, a)
+                    };
+                    ranges.push(FloatRange {
+                        min: bound(&mut rng, lo),
+                        min_incl: rng.chance(50),
+                        max: bound(&mut rng, hi),
+                        max_incl: rng.chance(50),
+                    });
+                } else {
+                    pts.push(
+                        (0..rng.int(1, 3))
+                            .map(|_| OrdF64::new(pick(&mut rng)))
+                            .collect(),
+                    );
+                }
+            }
+            let mut space: Vec<(ClassId, SplitKey<'_>)> = ranges
+                .iter()
+                .enumerate()
+                .map(|(k, r)| (cid(k), SplitKey::Float(*r, single)))
+                .collect();
+            let base = space.len();
+            space.extend(
+                pts.iter()
+                    .enumerate()
+                    .map(|(k, s)| (cid(base + k), SplitKey::FloatPts(s))),
+            );
+            let told = random_told(&mut rng, space.len());
+            check_ordered(&space, float_hull, &told, &format!("float round {round}"));
+        }
+    }
+
+    #[test]
+    fn the_text_index_misses_no_pair() {
+        let mut rng = Rng(0x589_641);
+        let words = ["a", "b", "c", "d"];
+        for round in 0..3000 {
+            let n = usize::try_from(rng.int(2, 10)).unwrap();
+            let mut strs: Vec<StrSet> = Vec::new();
+            let mut langs: Vec<LangSet> = Vec::new();
+            let mut plain = 0usize;
+            for _ in 0..n {
+                match rng.below(6) {
+                    0 => strs.push(StrSet::Top),
+                    1 => langs.push(LangSet::Top),
+                    2 => plain += 1,
+                    3 => langs.push(LangSet::Set(
+                        (0..rng.int(0, 2))
+                            .map(|_| {
+                                let w = words[usize::try_from(rng.below(4)).unwrap()];
+                                (
+                                    w.to_owned(),
+                                    if rng.chance(50) { "en" } else { "fr" }.to_owned(),
+                                )
+                            })
+                            .collect(),
+                    )),
+                    _ => strs.push(StrSet::Set(
+                        (0..rng.int(0, 3))
+                            .map(|_| words[usize::try_from(rng.below(4)).unwrap()].to_owned())
+                            .collect(),
+                    )),
+                }
+            }
+            // The string space as the detector builds it (bare `langString` joins it), and
+            // the language-tagged one.
+            let mut text: Vec<(ClassId, SplitKey<'_>)> = strs
+                .iter()
+                .enumerate()
+                .map(|(k, s)| (cid(k), SplitKey::Str(s)))
+                .collect();
+            let base = text.len();
+            text.extend((0..plain).map(|k| (cid(base + k), SplitKey::Plain)));
+            let base = text.len();
+            text.extend(
+                langs
+                    .iter()
+                    .filter(|s| matches!(s, LangSet::Top))
+                    .enumerate()
+                    .map(|(k, s)| (cid(base + k), SplitKey::Lang(s))),
+            );
+            let told = random_told(&mut rng, text.len());
+            check_text(&text, &told, &format!("text round {round}"));
+            let mut lang: Vec<(ClassId, SplitKey<'_>)> = langs
+                .iter()
+                .enumerate()
+                .map(|(k, s)| (cid(k), SplitKey::Lang(s)))
+                .collect();
+            let base = lang.len();
+            lang.extend((0..plain).map(|k| (cid(base + k), SplitKey::Plain)));
+            let told = random_told(&mut rng, lang.len());
+            check_text(&lang, &told, &format!("lang round {round}"));
+        }
     }
 }

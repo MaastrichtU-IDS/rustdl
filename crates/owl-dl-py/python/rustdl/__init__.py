@@ -35,6 +35,7 @@ from rustdl._native import (
     class_expression_instances as _class_expression_instances_native,
     dropped_axioms as dropped_axioms,
     universal_role_ordinary as universal_role_ordinary,
+    data_case_split_risk as _data_case_split_risk,
     conversion_notes as _conversion_notes_native,
     _take_conversion_notes as _take_conversion_notes,
     RustdlError as RustdlError,
@@ -630,6 +631,7 @@ def _prepared_justify_result(self: "PreparedOntology", query):
     _warn_if_not_minimal(name, r, every=False, stacklevel=3)
     _warn_if_dropped(name, self.dropped)
     _warn_if_universal_role(name, self.universal_role_ordinary)
+    _warn_if_data_case_split(name, self.data_case_split_risk)
     return r
 
 
@@ -644,6 +646,7 @@ def _prepared_justify(self: "PreparedOntology", query):
     _warn_if_not_minimal(name, r, every=False, stacklevel=3)
     _warn_if_dropped(name, self.dropped)
     _warn_if_universal_role(name, self.universal_role_ordinary)
+    _warn_if_data_case_split(name, self.data_case_split_risk)
     return _first(r)
 
 
@@ -657,6 +660,7 @@ def _prepared_justify_all_result(self: "PreparedOntology", query, max=10):
     _warn_if_not_minimal(name, r, every=True, stacklevel=3)
     _warn_if_dropped(name, self.dropped)
     _warn_if_universal_role(name, self.universal_role_ordinary)
+    _warn_if_data_case_split(name, self.data_case_split_risk)
     return r
 
 
@@ -671,6 +675,7 @@ def _prepared_justify_all(self: "PreparedOntology", query, max=10):
     _warn_if_not_minimal(name, r, every=True, stacklevel=3)
     _warn_if_dropped(name, self.dropped)
     _warn_if_universal_role(name, self.universal_role_ordinary)
+    _warn_if_data_case_split(name, self.data_case_split_risk)
     return [list(j) for j in r.justifications]
 
 
@@ -775,6 +780,13 @@ def _warn_if_classification_universal(result: "Classification") -> "Classificati
     return result
 
 
+def _warn_if_classification_data_split(result: "Classification") -> "Classification":
+    # #589: the flag rides on the result (masked by a proved inconsistency), so no
+    # second conversion.
+    _warn_if_data_case_split("classify", result.data_case_split_risk, stacklevel=4)
+    return result
+
+
 def _warn_if_classification_dropped(result: "Classification") -> "Classification":
     # #597: the drops ride on the result, so no second conversion.
     _warn_if_dropped("classify", result.dropped, stacklevel=4)
@@ -838,11 +850,11 @@ def _warn_if_dropped(name: str, dropped, stacklevel: int = 3) -> None:
 
 
 def _conversion_notes(path):
-    """#597: `(dropped pairs, universal_role_ordinary, ..._for_roles)` by a parse
-    and conversion of its own: the fallback for a native query that did not record
-    its notes (see `_with_conversion_notes`)."""
-    dropped, uro, uro_for_roles = _conversion_notes_native(path)
-    return tuple(sorted(dropped.items())), uro, uro_for_roles
+    """#597: `(dropped pairs, universal_role_ordinary, ..._for_roles,
+    data_case_split_risk)` by a parse and conversion of its own: the fallback for a
+    native query that did not record its notes (see `_with_conversion_notes`)."""
+    dropped, uro, uro_for_roles, dcs = _conversion_notes_native(path)
+    return tuple(sorted(dropped.items())), uro, uro_for_roles, dcs
 
 
 def _query_notes(path):
@@ -851,8 +863,8 @@ def _query_notes(path):
     notes = _take_conversion_notes()
     if notes is None:
         return _conversion_notes(path)
-    dropped, uro, uro_for_roles = notes
-    return tuple(sorted(dropped.items())), uro, uro_for_roles
+    dropped, uro, uro_for_roles, dcs = notes
+    return tuple(sorted(dropped.items())), uro, uro_for_roles, dcs
 
 
 class ConsistencyUndeterminedWarning(UserWarning):
@@ -1251,6 +1263,8 @@ def _ce_note(name: str, native: dict) -> dict:
     # #543: the flag of the PROBED conversion, so a universal role used only in the
     # query expression is caught too.
     _warn_if_universal_role(name, native["universal_role_ordinary"], stacklevel=4)
+    # #589: likewise the probed conversion's, so a data range in the query counts.
+    _warn_if_data_case_split(name, native["data_case_split_risk"], stacklevel=4)
     return native
 
 
@@ -1264,6 +1278,7 @@ def _ce_verdict(native: dict) -> ClassExpressionVerdict:
         no_verdict=native["no_verdict"],
         dropped=tuple(sorted(native["dropped"].items())),
         universal_role_ordinary=native["universal_role_ordinary"],
+        data_case_split_risk=native["data_case_split_risk"],
     )
 
 
@@ -1277,6 +1292,7 @@ def _ce_instances(native: dict) -> ClassExpressionInstances:
         depth_capped=native["depth_capped"],
         dropped=tuple(sorted(native["dropped"].items())),
         universal_role_ordinary=native["universal_role_ordinary"],
+        data_case_split_risk=native["data_case_split_risk"],
     )
 
 
@@ -1420,14 +1436,14 @@ def classify(
 
     `global_deadline_ms` is a deprecated alias for `global_timeout_ms`."""
     global_timeout_ms = _resolve_global_timeout(global_timeout_ms, global_deadline_ms)
-    return _warn_if_classification_universal(_warn_if_classification_dropped(_warn_if_classification_trusted(_warn_if_incomplete(
+    return _warn_if_classification_data_split(_warn_if_classification_universal(_warn_if_classification_dropped(_warn_if_classification_trusted(_warn_if_incomplete(
         _classify_native(
             path,
             per_pair_timeout_ms=per_pair_timeout_ms,
             global_deadline_ms=global_timeout_ms,
             saturation_only=saturation_only,
         )
-    ))))
+    )))))
 
 
 def classify_bytes(
@@ -1444,7 +1460,7 @@ def classify_bytes(
     timeout/completeness semantics. `global_deadline_ms` is a deprecated
     alias for `global_timeout_ms`."""
     global_timeout_ms = _resolve_global_timeout(global_timeout_ms, global_deadline_ms)
-    return _warn_if_classification_universal(_warn_if_classification_dropped(_warn_if_classification_trusted(_warn_if_incomplete(
+    return _warn_if_classification_data_split(_warn_if_classification_universal(_warn_if_classification_dropped(_warn_if_classification_trusted(_warn_if_incomplete(
         _classify_bytes_native(
             data,
             format=format,
@@ -1452,7 +1468,7 @@ def classify_bytes(
             global_deadline_ms=global_timeout_ms,
             saturation_only=saturation_only,
         )
-    ))))
+    )))))
 
 
 def debug(path):
@@ -1468,7 +1484,7 @@ def debug(path):
     inconsistency=Inconsistency(...). Read-only; sound by construction. Emits
     `IncompleteQueryWarning` when a reasoner check under it gave up (#396), through
     `diagnose`, `justify` and `repair`, and `DroppedAxiomsWarning` /
-    `UniversalRoleWarning` once, after them (#597)."""
+    `UniversalRoleWarning` / `DataCaseSplitWarning` once, after them (#597, #589)."""
     _take_conversion_notes()
     seen = []
 
@@ -1486,9 +1502,10 @@ def debug(path):
         _justify_quietly,
         getattr(repair, "__wrapped__", repair),
     )
-    dropped, uro, _ = _query_notes(path)
+    dropped, uro, _, dcs = _query_notes(path)
     _warn_if_dropped("debug", dropped, stacklevel=3)
     _warn_if_universal_role("debug", uro, stacklevel=3)
+    _warn_if_data_case_split("debug", dcs, stacklevel=3)
     unguaranteed = [r for r in seen if r.minimal and not r.minimal[0]]
     causes = sorted({c for r in unguaranteed for c in _minimality_causes(r)})
     if causes:
@@ -1568,6 +1585,33 @@ def _warn_if_universal_role(name: str, flagged: bool, stacklevel: int = 3) -> No
         )
 
 
+class DataCaseSplitWarning(UserWarning):
+    """Some data range may need reasoning by cases over its values, which rustdl does
+    not do (#589): a range that is not a single value (`DataOneOf` of several
+    values, a datatype restriction, a union) meets another range of its datatype
+    without a seeded subsumption into it. rustdl reads each data range as an atom, so
+    `C ⊑ ∃d.{1,2}`, `hasValue(d,1) ⊑ E` and `hasValue(d,2) ⊑ E`, which entail
+    `C ⊑ E`, give no `C ⊑ E`. Positive answers are sound, but a negative answer
+    ("satisfiable", "not subsumed", "not an instance", "consistent") or a missing
+    entailment may be wrong. Not an `IncompleteQueryWarning`: nothing was cut.
+    `rustdl._data_case_split_risk(path)` reports the same fact (private for now), and
+    `Classification.data_case_split_risk` carries it for `classify` (voiding
+    `completeness_guaranteed`). Emitted wherever `UniversalRoleWarning` is, with the
+    same masking by a proved inconsistency."""
+
+
+def _warn_if_data_case_split(name: str, flagged: bool, stacklevel: int = 3) -> None:
+    if flagged:
+        _warnings.warn(
+            f"{name}: a data range here may need reasoning by cases (a range that is "
+            "not a single value meets another of its datatype), which rustdl does not "
+            "do. Positive answers are sound; a negative answer or a missing entailment "
+            "may be wrong (see DataCaseSplitWarning).",
+            DataCaseSplitWarning,
+            stacklevel=stacklevel,
+        )
+
+
 # #543: the role-level functions, which take the role-level flag (a role above a top
 # property, or since #624 a property disjointness with a universal member: role
 # consequences these functions do not list), as the CLI's role-level commands do
@@ -1590,32 +1634,36 @@ _ROLE_LEVEL = frozenset({
 
 
 # #543: a proved inconsistency masks the flag (every entailment holds), as in
-# `classify` and the CLI's `consistent`: `is_consistent` warns only on `True`.
+# `classify` and the CLI's `consistent`: `is_consistent` warns only on `True`. The same
+# masking applies to #589's `data_case_split_risk`.
 _MASKED_BY_INCONSISTENCY = {"is_consistent": lambda consistent: consistent}
 
 
 def _with_conversion_notes(name, fn):
-    """Wrap a path-taking query so it warns `DroppedAxiomsWarning` (#597) and
-    `UniversalRoleWarning` (#543) after answering, from the notes its native recorded
-    from its own parse (`_query_notes`). A proved inconsistency masks only the
-    universal role."""
+    """Wrap a path-taking query so it warns `DroppedAxiomsWarning` (#597),
+    `UniversalRoleWarning` (#543) and `DataCaseSplitWarning` (#589) after answering,
+    from the notes its native recorded from its own parse (`_query_notes`). A proved
+    inconsistency masks the universal role and the data case split, not the drops.
+    The data flag has no role-level form: the role-level functions take the
+    class-level one, as the CLI's role-level commands do."""
 
     @_functools.wraps(fn)
     def wrapper(path, *args, **kwargs):
         _take_conversion_notes()  # discard any left by a query that raised
         result = fn(path, *args, **kwargs)
-        dropped, uro, uro_for_roles = _query_notes(path)
+        dropped, uro, uro_for_roles, dcs = _query_notes(path)
         _warn_if_dropped(name, dropped, stacklevel=3)
         if _MASKED_BY_INCONSISTENCY.get(name, lambda _r: True)(result):
             _warn_if_universal_role(
                 name, uro_for_roles if name in _ROLE_LEVEL else uro, stacklevel=3
             )
+            _warn_if_data_case_split(name, dcs, stacklevel=3)
         return result
 
     return wrapper
 
 
-# #543/#597: every path-taking surface whose answer can be a definite negative or an
+# #543/#597/#589: every path-taking surface whose answer can be a definite negative or an
 # incomplete list. `classify` / `classify_bytes` read the flags off the result
 # instead (no second conversion); `debug` calls the unwrapped queries and warns
 # once itself; the class-expression queries read `dropped` off their own result.
@@ -1693,6 +1741,7 @@ __all__ = [
     "dropped_axioms",
     "universal_role_ordinary",
     "UniversalRoleWarning",
+    "DataCaseSplitWarning",
     "RustdlError",
     "ParseError",
     "UnsupportedAxiomError",

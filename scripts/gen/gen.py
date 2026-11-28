@@ -1134,7 +1134,10 @@ class DataCase(Case):
     pieces; a range narrowing a filler; an empty key), integer against whole decimal
     (incl. past i64, #641), inclusive against exclusive bounds, negative assertions on every
     member, and data counting. `ent` entails a consequence; `ctl` drops or moves one piece so
-    it does not. Both are scored by the oracle, never by the label.
+    it does not. Both are scored by the oracle, never by the label. One label is wrong: a
+    `range_cover/ent` on `xsd:dateTime` does not entail its consequence. Timezone-free bounds
+    leave a gap under XSD 1.1's partial order: a timezoned instant within 14 h of the split
+    point is in the range but neither ≤ nor > that point. HermiT agrees; Konclude does not.
     """
 
     profile = "data_range"
@@ -1329,7 +1332,10 @@ class DataCase(Case):
                 return None
             op = {"subprop": "SubDataPropertyOf", "eqprop": "EquivalentDataProperties",
                   "disjprop": "DisjointDataProperties"}[k]
-            return f"{op}(:{d} :{r.choice(same)})"
+            # `d` is redrawn per element above, so the pick can equal it: refuse the repeat
+            # (#538: a set for rustdl, a list for the peers), keeping every other stream.
+            x = r.choice(same)
+            return None if x == d else f"{op}(:{d} :{x})"
         if k == "func":
             return f"FunctionalDataProperty(:{self.D()})"
         if k == "disjcls":
@@ -1937,6 +1943,16 @@ def self_test():
     ok("a mixed integer/decimal enumeration only in full",
        [c.index for c in dcs if c.stratum != "full" and re.search(
            r"DataOneOf\([^)]*xsd:integer[^)]*xsd:decimal", c.ofn())], [])
+    def repeated_operand(axioms):
+        """n-ary axioms (and sub-property) naming one operand twice: #538's set/list split."""
+        return [a for a in axioms if re.match(
+            r"(DisjointClasses|DisjointDataProperties|EquivalentDataProperties|"
+            r"SubDataPropertyOf)\((\S+) \2\)", a)]
+    ok("no repeated operand in an n-ary axiom (#538)",
+       [c.index for c in dcs if repeated_operand(c.axioms)], [])
+    ok("the repeated-operand check fires (negative control)",
+       repeated_operand(["DisjointDataProperties(:d1 :d1)", "DisjointClasses(:C2 :C2)"]),
+       ["DisjointDataProperties(:d1 :d1)", "DisjointClasses(:C2 :C2)"])
     ok("the motif property is never drawn at random",
        [c.index for c in dcs if c.motif == "none" and ":m " in c.ofn()], [])
     print(f"gen self-test: {'all ok' if not fails else f'{fails} FAILED'}")

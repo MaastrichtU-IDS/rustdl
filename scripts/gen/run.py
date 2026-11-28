@@ -700,7 +700,12 @@ def differential(control, mutant):
         if c is None or m["oracle"]["verdict"] != "agree":
             continue
         base = {(f["kind"], f["witness"]) for f in c["findings"]}
-        new = [f for f in m["findings"] if (f["kind"], f["witness"]) not in base]
+        base_finding = {(f["kind"], f["witness"]) for f in c["findings"]
+                        if f["tier"] == "finding"}
+        # New, or promoted to the finding tier: a miss the control declares (exposed) that
+        # the mutant certifies is a detection (MD1, #589's signal removed). A demotion is not.
+        new = [f for f in m["findings"] if (f["kind"], f["witness"]) not in base
+               or (f["tier"] == "finding" and (f["kind"], f["witness"]) not in base_finding)]
         if new:
             out[case] = new
     return out
@@ -970,6 +975,14 @@ def self_test():
        sk(cons, {A: "inconsistent", B: "inconsistent", C: "inconsistent"}),
        [("consistency-FP", "finding", "KB")])
     ok("sat refusing an inconsistent KB is clean", sk(inc, {A: "inconsistent"}), [])
+    _ctl = {"x": {"oracle": {"verdict": "agree"}, "findings": [
+        {"kind": "unsat-MISSED", "tier": "exposed", "witness": C, "arm": "classify"}]}}
+    _mut = {"x": {"oracle": {"verdict": "agree"}, "findings": [
+        {"kind": "unsat-MISSED", "tier": "finding", "witness": C, "arm": "classify"}]}}
+    ok("detect counts a miss promoted from exposed to finding (MD1)",
+       sorted(differential(_ctl, _mut)), ["x"])
+    ok("detect does not count a demotion from finding to exposed",
+       sorted(differential(_mut, _ctl)), [])
     ok("a certified miss under collapsed operands (#538) is exposed",
        kinds(dict(cons, unsat=[C]), classify=cj(collapsed_operands={"axioms": 1, "vacuous": 1}))
        [:1], [("unsat-MISSED", "exposed", C)])

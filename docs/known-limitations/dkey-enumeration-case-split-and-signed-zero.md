@@ -1,8 +1,8 @@
-# A data enumeration is not split into its points, and a zero at a bound gets no edge (#556 residuals)
+# A data enumeration is not split into its points (#556), and signed-zero residuals (#590)
 
-**Status:** open, and signalled since #589. Both are sound misses. Before #589 the first read `completeness_guaranteed: true` (the D10 shape); now every surface reports `data_case_split_risk: true` and voids its guarantee (condition 12, see "Signal" below). The entailments themselves are still missed.
+**Status:** open, and signalled since #589. Both are sound misses. Before #589 the first read `completeness_guaranteed: true` (the D10 shape); now every surface reports `data_case_split_risk: true` and voids its guarantee (condition 12, see "Signal" below). The entailments themselves are still missed. §2 (#590): the one remaining signed-zero residual, the case split over `[0, 0]`, voids the guarantee through two conditions at once. The fragment gate rejects the ontology (`has_signed_zero_split`, condition 1), and `data_case_split_risk` is set because `[0, 0]` meets the zero points without an edge into them (condition 12). It is one residual, not two.
 
-#556 seeds told `DKey ⊑ DKey` edges between the range bucket and the enumeration bucket of one datatype: `enumeration ⊑ range` and `range ⊑ enumeration`. Two shapes remain out of reach.
+#556 seeds told `DKey ⊑ DKey` edges between the range bucket and the enumeration bucket of one datatype: `enumeration ⊑ range` and `range ⊑ enumeration`. Two shapes remain out of reach: §1, and the signed-zero cases in §2.
 
 ## 1. Reasoning by cases over an enumeration
 
@@ -20,20 +20,24 @@ The entailment needs `{1,2} ⊑ {1} ⊔ {2}`, a disjunction, and no `DKey ⊑ DK
 
 Pinned (`#[ignore]`d, asserting the right answer): `excluding_every_member_of_a_multi_member_enumeration` in `crates/owl-dl-reasoner/tests/dkey_range_oneof_subsumption.rs`.
 
-## 2. A zero at an IEEE range bound
+## 2. Signed zero (#590)
 
-```
-SubClassOf(:C DataSomeValuesFrom(:d DataOneOf("0.0"^^xsd:double)))
-SubClassOf(DataHasValue(:d "0.0"^^xsd:double) :E)
-```
+OWL 2 (Structural Specification §4.2) reads a literal value by **identity**, where `-0` and `+0` are distinct, and a **facet** by equality, where they are equal. So `hasValue(d, -0.0)` and `hasValue(d, 0.0)` are different values, while the facet range `[0, 0]` holds both. Since #590:
 
-HermiT and Konclude derive `C ⊑ E`; rustdl does not.
+- a literal zero point keeps its own key, and the two zero points are disjoint;
+- `DataOneOf` members keep their sign;
+- the degenerate facet range `[0, 0]` has its own key, written `[-0, +0]`;
+- a facet range that contains 0 is above both zero points.
 
-The `xsd:float` / `xsd:double` buckets collapse `-0` and `+0` (`OrdF64::new`). That is safe for disjointness, but an edge resting on it could claim `{-0} ⊑ {+0}`, and HermiT keeps the two apart (Konclude does not). So #556 gives a zero member an edge only when zero is strictly inside the range, and gives a zero point no `range ⊑ enumeration` edge.
+The #556 zero-at-a-bound residual (`{+0} ⊑ hasValue(+0)`) is now derived.
 
-Pinned (`#[ignore]`d): `an_enumerated_zero_against_a_zero_point` in the same file.
+What remains:
 
-The range bucket alone already derives `hasValue(d, -0.0) ⊑ hasValue(d, +0.0)` on main (HermiT: no; Konclude: yes). That is a separate question about signed zero, recorded for an issue.
+- **Case split over `[0, 0]`.** `∃d.[0, 0]` is `∃d.{+0} ⊔ ∃d.{-0}`, and nothing makes that split. With `C ⊑ ∃d.double[0, 0]`, `hasValue(d, 0.0) ⊑ E` and `hasValue(d, -0.0) ⊑ E`, the entailment `C ⊑ E` is missed, and so is `∃d.[0, 0] ⊑ ∃d.{+0, -0}`. The specification says yes to both. HermiT says yes for `xsd:float` and no for `xsd:double`. Whenever a `-0` value or the `[0, 0]` range occurs, the PureEl gate withholds the completeness guarantee (`has_signed_zero_split`), so `completeness_guaranteed` reads `false`. No ORE file has one.
+- **Counting the zeros is not a residual.** The concrete-domain bridge counts the IEEE zero point as two values (`PointMultiplicity`), however the range was reached, and counts enumeration members by identity. So `≥2 d.[-1, 0] ⊓ ∀d.[0, 1]` and `≥2 d.{+0, -0}` are satisfiable, and `≥3 d.[0, 0]` is unsat. HermiT reads the `xsd:double` enumeration forms unsat, and the specification decides (§4.2).
+- `Functional(d)` with `d(a, 0.0)` and `d(a, -0.0)` is inconsistent (the specification's own example), and rustdl derives it from the disjoint zero points. HermiT reads the `xsd:double` form consistent.
+
+Pinned in `crates/owl-dl-reasoner/tests/signed_zero.rs` (`signed_zero_residuals`) and `concrete_domain_clash.rs` (`float_oneof_signed_zero_dedup_unsat`).
 
 ## Signal (#589)
 
@@ -48,8 +52,8 @@ plan review (probes in `~/rustdl/sweeps/wB/589/fable/`):
   points;
 - a range narrowing a filler: `Range(d, [9,20])` with `∃d.[1,10]`, or
   `Range(d, nonNegativeInteger)` with `∃d.(≤1)`, and the points of the intersection;
-- an unrelated superset key does not clear the flag (`t_superkey`), and a zero point counts as
-  two values (section 2);
+- an unrelated superset key does not clear the flag (`t_superkey`), and the degenerate zero
+  range `[0, 0]` counts as two values, while a literal zero point is one (section 2, #590);
 - an empty key (`int[5,1]`, `decimal(1.0, 1.0]`, float bounds with no `f32` between them),
   which needs no split but is an atom to the engines, so `C ⊑ ∃d.int[5,1]` left `C`
   satisfiable (Fable review of #589; pre-existing on main);

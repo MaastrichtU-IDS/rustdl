@@ -627,7 +627,8 @@ impl ValueRange for IntUnion {
 /// inclusive/exclusive bounds. Backs `xsd:float`/`double`/`decimal` and (as a
 /// conservatively-dense model — no calendar arithmetic) `xsd:date`/`dateTime`.
 /// Capacity is **infinite** for any non-degenerate interval; a single inclusive
-/// point holds exactly one value (so `≥2 p.{v}` is a sound counting clash).
+/// point holds one value (so `≥2 p.{v}` is a sound counting clash), except the IEEE
+/// zero, which holds two ([`PointMultiplicity`], #590).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DenseInterval<T> {
     /// Lower bound value; `None` = −∞.
@@ -663,7 +664,30 @@ impl<T: Ord + Clone> DenseInterval<T> {
     }
 }
 
-impl<T: Ord + Clone> ValueRange for DenseInterval<T> {
+/// How many values a [`DenseInterval`] point `[v, v]` holds. One for every type
+/// except the IEEE zero (#590): `OrdF64` normalizes `-0` into `+0`, so the point `0`
+/// stands for the set `{+0, -0}` whenever it comes from a facet range (which reads
+/// the zeros by equality), and that set holds TWO values (OWL 2 Structural
+/// Specification §4.2: equal but not identical). Counting it as 2 also for a literal
+/// zero point only removes clashes, which is sound.
+pub trait PointMultiplicity {
+    /// The number of distinct values in the inclusive point `[self, self]`.
+    fn point_multiplicity(&self) -> u128 {
+        1
+    }
+}
+
+impl PointMultiplicity for OrdF64 {
+    fn point_multiplicity(&self) -> u128 {
+        if self.0 == 0.0 { 2 } else { 1 }
+    }
+}
+impl PointMultiplicity for Decimal {}
+impl PointMultiplicity for DateKey {}
+impl PointMultiplicity for DateTimeKey {}
+impl PointMultiplicity for i64 {}
+
+impl<T: Ord + Clone + PointMultiplicity> ValueRange for DenseInterval<T> {
     fn is_empty(&self) -> bool {
         match (&self.min, &self.max) {
             (Some(lo), Some(hi)) => lo > hi || (lo == hi && !(self.min_incl && self.max_incl)),
@@ -722,10 +746,13 @@ impl<T: Ord + Clone> ValueRange for DenseInterval<T> {
         if self.is_empty() {
             return Some(0);
         }
-        // A single inclusive point holds exactly one value; any other
-        // non-empty interval is dense ⇒ infinitely many.
+        // A single inclusive point holds one value (two for the IEEE zero, see
+        // `PointMultiplicity`); any other non-empty interval is dense ⇒ infinitely
+        // many.
         match (&self.min, &self.max) {
-            (Some(lo), Some(hi)) if lo == hi && self.min_incl && self.max_incl => Some(1),
+            (Some(lo), Some(hi)) if lo == hi && self.min_incl && self.max_incl => {
+                Some(lo.point_multiplicity())
+            }
             _ => None,
         }
     }

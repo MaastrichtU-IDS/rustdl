@@ -65,14 +65,24 @@ fn the_issue_repro_counts_its_enumeration() {
     assert_eq!(count(body), 1);
 }
 
-/// An IEEE zero is two values (the buckets merge `-0` and `+0`), so the double point
-/// `0.0` and the enumeration `{0.0}` are not points, and they meet with no edge between
-/// them (#556 leaves zero at a bound unseeded). A non-zero point is one value.
+/// Signed zero by the OWL 2 rules (#590): the literal point `0.0` and the enumeration
+/// `{0.0}` are ONE value each (identity), with edges both ways between them, so neither
+/// is counted. The facet range `[0, 0]` holds BOTH zeros (equality); it meets the `+0`
+/// point with no edge into it, so it is counted. Before #590 the buckets merged the
+/// zeros, and this test asserted 2 for the first case (the merged reading).
 #[test]
-fn a_zero_point_is_two_values() {
+fn a_zero_value_is_one_value_and_the_zero_range_two() {
     let zero = "SubClassOf(:C DataSomeValuesFrom(:d DataOneOf(\"0.0\"^^xsd:double)))\n\
          SubClassOf(DataHasValue(:d \"0.0\"^^xsd:double) :E)";
-    assert_eq!(count(zero), 2);
+    assert_eq!(count(zero), 0);
+    let range = "SubClassOf(:C DataSomeValuesFrom(:d DatatypeRestriction(xsd:double \
+         xsd:minInclusive \"0.0\"^^xsd:double xsd:maxInclusive \"0.0\"^^xsd:double)))\n\
+         SubClassOf(DataHasValue(:d \"0.0\"^^xsd:double) :E)";
+    assert_eq!(count(range), 1);
+    // The two literal zero points are one value each, and disjoint: nothing to split.
+    let both = "SubClassOf(:C DataHasValue(:d \"0.0\"^^xsd:double))\n\
+         SubClassOf(DataHasValue(:d \"-0.0\"^^xsd:double) :E)";
+    assert_eq!(count(both), 0);
     let one = "SubClassOf(:C DataSomeValuesFrom(:d DataOneOf(\"1.0\"^^xsd:double)))\n\
          SubClassOf(DataHasValue(:d \"1.0\"^^xsd:double) :E)";
     assert_eq!(count(one), 0);

@@ -841,6 +841,75 @@ pub(crate) struct FloatRange {
 }
 
 impl FloatRange {
+    /// #590: the sign of a literal ZERO POINT `[±0, ±0]` (both bounds the same zero,
+    /// both inclusive), `true` for `-0`. A literal's value is one zero by identity
+    /// (OWL 2 Structural Specification §4.2), so the two zero points are distinct
+    /// values. A facet range never has this shape: [`Self::facet_key`] writes facet
+    /// bounds with `+0` and the degenerate facet range `[0, 0]` as `[-0, +0]`.
+    #[allow(
+        clippy::float_cmp,
+        reason = "`== 0.0` is the intended test for either zero"
+    )]
+    pub(crate) fn zero_point_sign(&self) -> Option<bool> {
+        match (self.min, self.max) {
+            (Some(a), Some(b))
+                if a == 0.0
+                    && b == 0.0
+                    && self.min_incl
+                    && self.max_incl
+                    && a.is_sign_negative() == b.is_sign_negative() =>
+            {
+                Some(a.is_sign_negative())
+            }
+            _ => None,
+        }
+    }
+
+    /// #590: the key of a FACET range. Facets compare by equality, where `-0 = +0`,
+    /// so a facet bound is written with `+0`, and the degenerate range `[0, 0]` (both
+    /// inclusive), which holds both zeros, is written `[-0, +0]`. Its IRI then differs
+    /// from both literal zero points, while every IEEE comparison still reads it as
+    /// `[0, 0]`.
+    #[allow(
+        clippy::float_cmp,
+        reason = "`== 0.0` is the intended test for either zero"
+    )]
+    #[must_use]
+    pub(crate) fn facet_key(self) -> Self {
+        // `x + 0.0` turns `-0.0` into `+0.0` and leaves every other value alone.
+        let mut r = Self {
+            min: self.min.map(|v| v + 0.0),
+            max: self.max.map(|v| v + 0.0),
+            ..self
+        };
+        if r.min == Some(0.0) && r.max == Some(0.0) && r.min_incl && r.max_incl {
+            r.min = Some(-0.0);
+        }
+        r
+    }
+
+    /// #590: [`Self::subset`] for told `DKey ⊑ DKey` edges. A literal zero point
+    /// holds one zero, so no other key is below it (not the other zero's point, not
+    /// the degenerate facet range `[0, 0]`, which holds both). Everything else is
+    /// the IEEE comparison, where the zeros are equal, as facets require.
+    pub(crate) fn key_subset(self, other: Self) -> bool {
+        if other.zero_point_sign().is_some() {
+            return self.zero_point_sign() == other.zero_point_sign();
+        }
+        self.subset(other)
+    }
+
+    /// #590: [`Self::disjoint`] for told disjointness: the two literal zero points
+    /// are distinct values, hence disjoint; everything else as IEEE.
+    pub(crate) fn key_disjoint(self, other: Self) -> bool {
+        if let (Some(a), Some(b)) = (self.zero_point_sign(), other.zero_point_sign())
+            && a != b
+        {
+            return true;
+        }
+        self.disjoint(other)
+    }
+
     /// Does `v` lie in this range? Honours the explicit inclusivity flags — the
     /// `±1` normalization that makes [`IntegerRange`] simple is INVALID for reals,
     /// so an exclusive bound is compared strictly.
@@ -1829,7 +1898,12 @@ fn parse_typed_float_oneof<A: ForIRI>(
                     } if datatype_iri.as_ref() == want_dt => to_value(literal)?,
                     _ => return None,
                 };
-                set.insert(OrdF64::new(v));
+                // #590: a member keeps its sign. `DataOneOf` is a set of literal
+                // VALUES, where `-0` and `+0` are distinct (OWL 2 §4.2), so `{-0}`
+                // and `{+0}` are different keys; `OrdF64`'s `total_cmp` order keeps
+                // both, and so does the concrete-domain bridge, which counts the
+                // enumeration by identity.
+                set.insert(OrdF64(v));
             }
             Some(set)
         }
@@ -3692,7 +3766,9 @@ fn literal_to_dj_key<A: ForIRI>(l: &Literal<A>) -> Option<DjLiteralKey> {
             datatype_iri,
         } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#float" => {
             let v: f32 = literal.parse().ok().filter(|v: &f32| v.is_finite())?;
-            Some(DjLiteralKey::Float(OrdF64::new(f64::from(v))))
+            // #590: by identity, so `+0` and `-0` are different values (no clash
+            // between disjoint properties carrying one each).
+            Some(DjLiteralKey::Float(OrdF64(f64::from(v))))
         }
         // ── Double bucket: xsd:double at f64 precision. Reject NaN and ±∞.
         Literal::Datatype {
@@ -3700,7 +3776,7 @@ fn literal_to_dj_key<A: ForIRI>(l: &Literal<A>) -> Option<DjLiteralKey> {
             datatype_iri,
         } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#double" => {
             let v: f64 = literal.parse().ok().filter(|v: &f64| v.is_finite())?;
-            Some(DjLiteralKey::Double(OrdF64::new(v)))
+            Some(DjLiteralKey::Double(OrdF64(v)))
         }
         // ── Date bucket (timezone-bearing dropped at parse — see parse_date).
         Literal::Datatype {

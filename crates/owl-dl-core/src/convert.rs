@@ -187,13 +187,38 @@ fn tagged_float_dkey_iri(tag: &str, range: FloatRange) -> String {
 /// Bounds are f64 representations of f32 values (exact by construction
 /// since every f32 is an exact f64); same-f32 lexicals map to the same
 /// bit pattern.
+///
+/// Only ever called with a FACET range (a datatype restriction or the
+/// `DataIntersectionOf` fold), so it writes [`FloatRange::facet_key`] (#590); a
+/// literal point goes through [`lower_float_data_to_some`] with its exact bits.
 fn float_dkey_iri(range: FloatRange) -> String {
-    tagged_float_dkey_iri(DKEY_FLOAT_TAG, range)
+    tagged_float_dkey_iri(DKEY_FLOAT_TAG, range.facet_key())
 }
 
 /// Build the deterministic `xsd:double` (`db:`) `DKey` IRI.
+/// A facet range only, as [`float_dkey_iri`].
 fn double_dkey_iri(range: FloatRange) -> String {
-    tagged_float_dkey_iri(DKEY_DOUBLE_TAG, range)
+    tagged_float_dkey_iri(DKEY_DOUBLE_TAG, range.facet_key())
+}
+
+/// #590: whether the ontology's `DKey` vocabulary tells the two zeros apart: a
+/// `-0` float/double value (a literal point or an enumeration member) or the
+/// degenerate facet range `[0, 0]`, which holds both. Reasoning with these is sound
+/// but not complete: `C ⊑ ∃d.[0, 0]` with `hasValue(+0) ⊑ E` and `hasValue(-0) ⊑ E`
+/// entails `C ⊑ E` by a case split no engine path performs. The fragment gate reads
+/// this to withhold the completeness guarantee. No ORE file has one.
+#[must_use]
+pub fn has_signed_zero_split(internal: &InternalOntology) -> bool {
+    let neg_zero = |v: f64| v.to_bits() == (-0.0f64).to_bits();
+    internal.vocabulary.classes().any(|(_, iri)| {
+        let range = parse_float_dkey_iri(iri).or_else(|| parse_double_dkey_iri(iri));
+        if let Some(r) = range {
+            return r.min.is_some_and(neg_zero) || r.max.is_some_and(neg_zero);
+        }
+        parse_float_oneof_iri(iri)
+            .or_else(|| parse_double_oneof_iri(iri))
+            .is_some_and(|set| set.iter().any(|v| neg_zero(v.0)))
+    })
 }
 
 /// Whether `iri` is a synthetic `DKey` class IRI (any datatype bucket).
@@ -831,11 +856,15 @@ fn parse_float_oneof_iri(
         if !v.is_finite() {
             return None;
         }
-        Some(crate::data_axioms::OrdF64::new(v))
+        // #590: sign-exact (identity), as `parse_xsd_float_oneof` built it.
+        Some(crate::data_axioms::OrdF64(v))
     })
 }
 
-/// Public decoder for a FLOAT-ONEOF `DKey` IRI.
+/// Public decoder for a FLOAT-ONEOF `DKey` IRI. Members are sign-exact (#590): the
+/// concrete-domain bridge counts enumeration values by identity, so `{+0, -0}` holds
+/// two values, as OWL 2 §4.2 requires. The enumeration buckets are counted apart
+/// from the interval buckets, so the `total_cmp` order never meets an interval bound.
 #[must_use]
 pub fn decode_float_oneof_dkey(
     iri: &str,
@@ -862,11 +891,12 @@ fn parse_double_oneof_iri(
         if !v.is_finite() {
             return None;
         }
-        Some(crate::data_axioms::OrdF64::new(v))
+        Some(crate::data_axioms::OrdF64(v))
     })
 }
 
-/// Public decoder for a DOUBLE-ONEOF `DKey` IRI.
+/// Public decoder for a DOUBLE-ONEOF `DKey` IRI; sign-exact, as
+/// [`decode_float_oneof_dkey`].
 #[must_use]
 pub fn decode_double_oneof_dkey(
     iri: &str,
@@ -4135,8 +4165,9 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
     // since equal ranges share one ClassId). Integer/float ranges are
     // `Copy`; the ordered ranges compare by reference.
     seed_bucket(out, &int_dkeys, IntSet::subset);
-    seed_bucket(out, &float_dkeys, |a, b| a.subset(*b));
-    seed_bucket(out, &double_dkeys, |a, b| a.subset(*b));
+    // #590: signed-zero identity for the literal zero points.
+    seed_bucket(out, &float_dkeys, |a, b| a.key_subset(*b));
+    seed_bucket(out, &double_dkeys, |a, b| a.key_subset(*b));
     seed_bucket(out, &dec_dkeys, OrdRange::subset);
     seed_bucket(out, &date_dkeys, OrdRange::subset);
     seed_bucket(out, &dt_dkeys, OrdRange::subset);
@@ -4230,8 +4261,8 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
     // Spec: docs/superpowers/specs/2026-07-20-dkey-disjointness-bounded-seeding-spec.md
     let comp = bounded_components.as_ref();
     seed_disjoint_bucket(out, &int_dkeys, IntSet::disjoint, comp);
-    seed_disjoint_bucket(out, &float_dkeys, |a, b| a.disjoint(*b), comp);
-    seed_disjoint_bucket(out, &double_dkeys, |a, b| a.disjoint(*b), comp);
+    seed_disjoint_bucket(out, &float_dkeys, |a, b| a.key_disjoint(*b), comp);
+    seed_disjoint_bucket(out, &double_dkeys, |a, b| a.key_disjoint(*b), comp);
     seed_disjoint_bucket(out, &dec_dkeys, OrdRange::disjoint, comp);
     seed_disjoint_bucket(out, &date_dkeys, OrdRange::disjoint, comp);
     seed_disjoint_bucket(out, &dt_dkeys, OrdRange::disjoint, comp);
@@ -4425,14 +4456,14 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
         out,
         &float_dkeys,
         &float_oneof_dkeys,
-        |r: &FloatRange, v: &crate::data_axioms::OrdF64| r.contains(v.0),
+        float_range_holds_member,
         comp,
     );
     seed_range_oneof_disjoint(
         out,
         &double_dkeys,
         &double_oneof_dkeys,
-        |r: &FloatRange, v: &crate::data_axioms::OrdF64| r.contains(v.0),
+        float_range_holds_member,
         comp,
     );
     seed_range_oneof_disjoint(out, &dec_dkeys, &dec_oneof_dkeys, OrdRange::contains, comp);
@@ -4460,15 +4491,15 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
         out,
         &float_dkeys,
         &float_oneof_dkeys,
-        float_range_holds_signed_zero_safe,
-        float_range_nonzero_point,
+        float_range_holds_member,
+        float_range_point_value,
     );
     seed_range_oneof_subsumptions(
         out,
         &double_dkeys,
         &double_oneof_dkeys,
-        float_range_holds_signed_zero_safe,
-        float_range_nonzero_point,
+        float_range_holds_member,
+        float_range_point_value,
     );
     seed_range_oneof_subsumptions(
         out,
@@ -4614,17 +4645,18 @@ enum SplitKey<'a> {
 }
 
 impl SplitKey<'_> {
-    /// One value exactly. An IEEE zero is two values (the buckets merge `-0` and `+0`),
-    /// so a zero point is not one.
+    /// One value exactly. Signed zero by the OWL 2 rules (#590): a literal zero point
+    /// and a sign-exact enumeration member are one value each, while the degenerate
+    /// facet range `[0, 0]` (written `[-0, +0]`) holds both zeros, so it is not a point
+    /// and a key meeting it can be flagged.
     fn is_point(&self) -> bool {
-        let nonzero = |v: f64| v.total_cmp(&0.0).is_ne() && v.total_cmp(&-0.0).is_ne();
         match self {
             SplitKey::Int(s) => enumerate_int_set(s, 1).is_some_and(|v| v.len() == 1),
             SplitKey::IntPts(s) => s.len() == 1,
             SplitKey::Dec(r) => decimal_point(r).is_some(),
             SplitKey::DecPts(s) => s.len() == 1,
-            SplitKey::Float(r, _) => float_range_nonzero_point(r, 1).is_some(),
-            SplitKey::FloatPts(s) => s.len() == 1 && s.iter().all(|v| nonzero(v.0)),
+            SplitKey::Float(r, _) => float_range_point_value(r, 1).is_some(),
+            SplitKey::FloatPts(s) => s.len() == 1,
             SplitKey::Date(r) => ord_range_point(r, 1).is_some(),
             SplitKey::DatePts(s) => s.len() == 1,
             SplitKey::Dt(r) => ord_range_point(r, 1).is_some(),
@@ -5227,28 +5259,37 @@ fn seed_range_oneof_subsumptions<R, V: Ord>(
     }
 }
 
-/// `v ∈ r` for the IEEE buckets, except where signed zero makes it ambiguous. The
-/// buckets collapse `-0` and `+0` ([`crate::data_axioms::OrdF64::new`]), which is
-/// safe for the disjointness they were built for (it can only hide a clash), but an
-/// edge resting on that collapse could claim `{-0} ⊑ [+0, …]`, and `HermiT` keeps the
-/// two apart. A zero member therefore counts only when zero is strictly inside the
-/// range (no bound at zero), where both zeros are in it. A zero at a bound is a
-/// sound miss, recorded in `docs/known-limitations/`.
+/// `v ∈ r` for the IEEE buckets, with signed zero by the OWL 2 rules (#590). A literal
+/// zero point ([`FloatRange::zero_point_sign`]) holds one zero, by identity; every
+/// other key is a facet range, which holds both zeros whenever it holds 0 (facets
+/// compare by equality). Enumeration members are sign-exact (`parse_*_oneof_iri`).
 #[allow(
     clippy::trivially_copy_pass_by_ref,
     reason = "matches the `Fn(&R, &V)` shape every bucket's `contains` takes"
 )]
-fn float_range_holds_signed_zero_safe(r: &FloatRange, v: &crate::data_axioms::OrdF64) -> bool {
-    let not_zero = |x: f64| x.total_cmp(&0.0).is_ne() && x.total_cmp(&-0.0).is_ne();
-    r.contains(v.0) && (not_zero(v.0) || (r.min.is_none_or(not_zero) && r.max.is_none_or(not_zero)))
+#[allow(
+    clippy::float_cmp,
+    reason = "`== 0.0` is the intended test for either zero"
+)]
+fn float_range_holds_member(r: &FloatRange, v: &crate::data_axioms::OrdF64) -> bool {
+    match r.zero_point_sign() {
+        Some(negative) => v.0 == 0.0 && v.0.is_sign_negative() == negative,
+        None => r.contains(v.0),
+    }
 }
 
-/// The single value of a point IEEE range (`[p, p]`, both ends inclusive), unless
-/// it is a zero (see [`float_range_holds_signed_zero_safe`]). NaN never parses.
-fn float_range_nonzero_point(
-    r: &FloatRange,
-    _cap: usize,
-) -> Option<Vec<crate::data_axioms::OrdF64>> {
+/// The single value of a point IEEE range (`[p, p]`, both ends inclusive), with its
+/// sign for a literal zero point. The degenerate facet range `[0, 0]` holds both
+/// zeros; it lists nothing, so `[0, 0] ⊑ {+0, -0}` is not claimed (a sound miss that
+/// `HermiT` shares). NaN never parses.
+fn float_range_point_value(r: &FloatRange, _cap: usize) -> Option<Vec<crate::data_axioms::OrdF64>> {
+    if let Some(negative) = r.zero_point_sign() {
+        return Some(vec![crate::data_axioms::OrdF64(if negative {
+            -0.0
+        } else {
+            0.0
+        })]);
+    }
     match (r.min, r.max) {
         (Some(lo), Some(hi))
             if lo.total_cmp(&hi).is_eq()

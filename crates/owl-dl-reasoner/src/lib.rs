@@ -11935,8 +11935,8 @@ fn build_dkey_range_map(
                 owl_dl_datatypes::CardRange::IntSet(owl_dl_datatypes::FiniteSet::Set(set)),
             );
         } else if let Some(set) = owl_dl_core::decode_float_oneof_dkey(iri) {
-            // Float-oneof: OrdF64 is already normalized (signed zero).
-            // Bridge to FiniteSet<OrdF64> used by the tableau's FloatSet bucket.
+            // Float-oneof: members are sign-exact (#590), so `{+0, -0}` holds two
+            // values, counted by identity in the tableau's FloatSet bucket.
             map.insert(
                 class_id,
                 owl_dl_datatypes::CardRange::FloatSet(owl_dl_datatypes::FiniteSet::Set(set)),

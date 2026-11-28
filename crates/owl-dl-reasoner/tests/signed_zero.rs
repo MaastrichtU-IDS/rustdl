@@ -319,11 +319,6 @@ fn a_facet_range_holds_both_zeros_and_a_value_is_itself() {
 ///   `E` above both zero values is missed (the specification says yes; `HermiT` says yes
 ///   for `xsd:float` and no for `xsd:double`). The guarantee is withheld.
 /// - `∃d.[0, 0] ⊑ ∃d.{+0, -0}`: the same split (`HermiT`: float yes, double no).
-///
-/// Not a residual: `Functional(d)` with `d(a, +0)` and `d(a, -0)` is inconsistent, the
-/// specification's own example (§4.2). The two zero points are disjoint keys, so the
-/// one `d`-value cannot be both. `HermiT` agrees for `xsd:float` and reads `xsd:double`
-/// consistent; the specification decides.
 #[test]
 fn signed_zero_residuals() {
     for t in ["d", "f"] {
@@ -337,10 +332,28 @@ fn signed_zero_residuals() {
             !c_sub_e(&oneof2, cases_body(&oneof2)),
             "{oneof2}: missed (residual)"
         );
-        let func = format!("r_func_{t}");
+    }
+}
+
+/// A new positive: `Functional(d)` with `d(a, 0.0)` and `d(a, -0.0)` is INCONSISTENT, in
+/// `xsd:double` and in `xsd:float`. This is the OWL 2 Structural Specification's own
+/// example (§4.2, Floating-Point Numbers): its ontology has `FunctionalDataProperty`
+/// with the literals `"+0"^^xsd:float` and `"-0"^^xsd:float` and reads: "Since positive
+/// and negative zero are not identical, the first two axioms violate the restriction of
+/// the last axiom, which makes the ontology inconsistent." For both datatypes the
+/// section says: "equality of values from the value space of xsd:double and xsd:float
+/// has no effect on the semantics of cardinality restrictions of OWL 2; in fact,
+/// equality is used only in the definition of facets." rustdl derives it from the two
+/// zero points being disjoint keys: the one `d`-value cannot be both.
+///
+/// Peer disagreement: `HermiT` reads the `xsd:float` form inconsistent and the
+/// `xsd:double` form consistent. The specification decides (Michel's option A for #590).
+#[test]
+fn functional_with_both_zeros_is_inconsistent() {
+    for func in ["r_func_d", "r_func_f"] {
         assert!(
-            !consistent(cases_body(&func)),
-            "{func}: inconsistent (the specification's example)"
+            !consistent(cases_body(func)),
+            "{func}: inconsistent (OWL 2 Structural Specification §4.2)"
         );
     }
 }

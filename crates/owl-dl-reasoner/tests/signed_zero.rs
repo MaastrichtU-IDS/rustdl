@@ -470,12 +470,11 @@ fn the_guarantee_is_withheld_on_every_surface() {
     use horned_owl::model::{Build, ClassExpression};
     let split = format!("{} ClassAssertion(:C :a)", cases_body("r_case_split_d"));
     let o = onto(&split);
-    assert!(
-        !owl_dl_reasoner::classify(&o)
-            .unwrap()
-            .completeness_guaranteed(),
-        "classify"
-    );
+    let c = owl_dl_reasoner::classify(&o).unwrap();
+    assert!(!c.completeness_guaranteed(), "classify");
+    // The same residual is signalled through both conditions (#589's detector sees
+    // `[0, 0]` meet the zero points with no edge into them); one residual, not two.
+    assert!(c.stats().data_case_split_risk, "data_case_split_risk");
     let (_, stats) =
         owl_dl_reasoner::is_subclass_of_with_stats(&o, &format!("{EX}C"), &format!("{EX}E"))
             .unwrap();

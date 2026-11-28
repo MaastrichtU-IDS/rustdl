@@ -849,6 +849,14 @@ pub struct ClassificationStats {
     /// `dropped`. Condition 9 of [`Self::completeness_guaranteed`]; a proved
     /// inconsistency masks it (every entailment then holds).
     pub universal_role_ordinary: bool,
+    /// #589: some data key may need reasoning by cases that no engine does
+    /// ([`owl_dl_core::convert::data_case_split_risk`]): a data range that is not a
+    /// single value meets another of the same value space without a seeded `⊑` into
+    /// it, so an entailment that needs the value-level split (`∃d.{1,2}` with
+    /// `hasValue(d,1) ⊑ E` and `hasValue(d,2) ⊑ E`) can be missed. Stamped next to
+    /// `dropped`. Condition 12 of [`Self::completeness_guaranteed`]; a proved
+    /// inconsistency masks it.
+    pub data_case_split_risk: bool,
     /// #538: n-ary axioms whose repeated operands conversion collapsed (their operands
     /// are a set; `owl_dl_core::set_operands`). Not a give-up and not in `dropped`: under
     /// the set reading nothing is lost. Under a list reading each could add positives
@@ -1228,6 +1236,10 @@ impl ClassificationStats {
     ///    (#543, `universal_role_ordinary`), unless the KB is proved inconsistent:
     ///    rustdl reasons with `owl:topObjectProperty` as an ordinary property, which
     ///    misses entailments of `Δ × Δ` (`⊤ ⊑ ∃r.D`, `∃top.D ⊑ ⊥` is inconsistent).
+    /// 12. no data key may need reasoning by cases (#589, `data_case_split_risk`),
+    ///     unless the KB is proved inconsistent: data ranges are atoms to every engine,
+    ///     so `∃d.{1,2} ⊑ E` from `hasValue(d,1) ⊑ E` and `hasValue(d,2) ⊑ E` is
+    ///     missed while the pure-EL gate admits all three axioms.
     ///
     /// `docs/assurance/completeness-guarantee-ledger.md` records each condition
     /// with its source issue, the CLI/Python field that reports it and the test
@@ -1272,6 +1284,7 @@ impl ClassificationStats {
             && self.dropped.is_empty()
             && !self.relies_on_trusted_consistency
             && (!self.universal_role_ordinary || self.inconsistent)
+            && (!self.data_case_split_risk || self.inconsistent)
     }
 }
 
@@ -1989,6 +2002,7 @@ pub(crate) fn classify_saturation_only_internal(
     h.stats.dropped = internal.dropped.clone();
     h.stats.universal_role_ordinary =
         owl_dl_core::top_bottom_roles::universal_role_ordinary(internal);
+    h.stats.data_case_split_risk = owl_dl_core::convert::data_case_split_risk(internal);
     // #539: off the pure-EL fragment the saturator is not complete for
     // consistency, and nothing else checks it here, so "no clash found" is all
     // `consistent: true` can mean. `r(a,b)` with `¬r(a,b)` read `consistent: true`
@@ -2026,6 +2040,7 @@ pub(crate) fn classify_internal_with_timeout(
     c.stats.dropped = internal.dropped.clone();
     c.stats.universal_role_ordinary =
         owl_dl_core::top_bottom_roles::universal_role_ordinary(internal);
+    c.stats.data_case_split_risk = owl_dl_core::convert::data_case_split_risk(internal);
     c.stats.collapsed_operands = internal.collapsed_operands;
     // #446: a consistency-probe give-up is kept apart from the pre-check routes' flag
     // so that a probe verdict cannot clear a route's give-up.
@@ -4616,6 +4631,7 @@ pub(crate) fn classify_top_down_internal_capturing(
     c.stats.dropped = internal.dropped.clone();
     c.stats.universal_role_ordinary =
         owl_dl_core::top_bottom_roles::universal_role_ordinary(internal);
+    c.stats.data_case_split_risk = owl_dl_core::convert::data_case_split_risk(internal);
     c.stats.collapsed_operands = internal.collapsed_operands;
     // #446: a consistency-probe give-up is kept apart from the pre-check routes' flag
     // so that a probe verdict cannot clear a route's give-up.

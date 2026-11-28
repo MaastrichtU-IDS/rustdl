@@ -194,7 +194,7 @@ public class RustdlReasoner extends OWLReasonerBase {
                 propHierResult = RustdlProcess.propertyHierarchy(ofn, timeoutSec);
                 for (String w : surfaceWarnings("property-hierarchy", "property-hierarchy",
                         propHierResult.incomplete, propHierResult.universal_role_ordinary,
-                        false, null)) {
+                        propHierResult.data_case_split_risk, false, null)) {
                     LOG.warning(w);
                 }
                 rebuildPropHierIndices();
@@ -204,6 +204,7 @@ public class RustdlReasoner extends OWLReasonerBase {
                 disjointResult = RustdlProcess.disjoint(ofn, timeoutSec);
                 for (String w : surfaceWarnings("disjoint", "disjointness",
                         disjointResult.incomplete, disjointResult.universal_role_ordinary,
+                        disjointResult.data_case_split_risk,
                         disjointResult.consistency_undetermined, "a disjoint-property answer")) {
                     LOG.warning(w);
                 }
@@ -214,6 +215,7 @@ public class RustdlReasoner extends OWLReasonerBase {
                 individualsResult = RustdlProcess.individuals(ofn, timeoutSec);
                 for (String w : surfaceWarnings("individuals", "same/different-individuals",
                         individualsResult.incomplete, individualsResult.universal_role_ordinary,
+                        individualsResult.data_case_split_risk,
                         individualsResult.consistency_undetermined, "a positive answer")) {
                     LOG.warning(w);
                 }
@@ -224,6 +226,7 @@ public class RustdlReasoner extends OWLReasonerBase {
                 propValuesResult = RustdlProcess.propertyValues(ofn, timeoutSec);
                 for (String w : surfaceWarnings("property-values", "property-values",
                         propValuesResult.incomplete, propValuesResult.universal_role_ordinary,
+                        propValuesResult.data_case_split_risk,
                         propValuesResult.consistency_undetermined, "a positive answer")) {
                     LOG.warning(w);
                 }
@@ -298,6 +301,10 @@ public class RustdlReasoner extends OWLReasonerBase {
         if (c.universal_role_ordinary) {
             out.add(universalRoleNote("classify"));
         }
+        // #589: masked by a proved inconsistency in the CLI's JSON, as the universal role.
+        if (c.data_case_split_risk) {
+            out.add(dataCaseSplitNote("classify"));
+        }
         // Trust alone is set on almost every ontology (pizza, wine, a one-axiom file), so it
         // is not warned on by itself; the CLI prints it as a note. It is when the wedge's
         // model is of a KB weaker by refused clauses or deferred encodings (#558). Those
@@ -323,13 +330,13 @@ public class RustdlReasoner extends OWLReasonerBase {
 
     /**
      * #610: one surface's warnings: its existing INCOMPLETE warning, plus
-     * {@code universal_role_ordinary} and {@code consistency_undetermined} where the surface
-     * reports them. {@code undeterminedScope} names what the latter covers on that surface
+     * {@code universal_role_ordinary}, {@code data_case_split_risk} (#589) and
+     * {@code consistency_undetermined} where the surface reports them. {@code undeterminedScope} names what the latter covers on that surface
      * (e.g. "a positive answer"); null when the surface has no such field.
      */
     static List<String> surfaceWarnings(String command, String what, boolean incomplete,
-            boolean universalRoleOrdinary, boolean consistencyUndetermined,
-            String undeterminedScope) {
+            boolean universalRoleOrdinary, boolean dataCaseSplitRisk,
+            boolean consistencyUndetermined, String undeterminedScope) {
         List<String> out = new ArrayList<>();
         if (incomplete) {
             out.add("rustdl reports an INCOMPLETE " + what + " result; "
@@ -337,6 +344,9 @@ public class RustdlReasoner extends OWLReasonerBase {
         }
         if (universalRoleOrdinary) {
             out.add(universalRoleNote(command));
+        }
+        if (dataCaseSplitRisk) {
+            out.add(dataCaseSplitNote(command));
         }
         if (consistencyUndetermined && undeterminedScope != null) {
             out.add("rustdl " + command + ": the KB's consistency could not be determined, so "
@@ -365,8 +375,8 @@ public class RustdlReasoner extends OWLReasonerBase {
      * #616: the warnings a realize result warrants, one per signal, worded as the CLI's
      * notes on {@code realize} (main.rs: {@code exit_if_no_verdict}, {@code warn_probes_cut},
      * the witness-prune warning, {@code warn_direct_types_unverified},
-     * {@code note_universal_role}). {@code dropped} is not warned on: classify, which always
-     * runs first, already warned on the same axioms. {@code env} is the environment the rustdl child inherits
+     * {@code note_universal_role}, {@code note_data_case_split}). {@code dropped} is not
+     * warned on: classify, which always runs first, already warned on the same axioms. {@code env} is the environment the rustdl child inherits
      * (Protégé's), read for the settings that change the direct-types remedy, as the CLI does.
      * {@code relies_on_trusted_consistency} is not warned on: classify ran first and warns
      * when the consistency wedge's KB is measurably weaker, and trust alone is near-universal.
@@ -409,6 +419,9 @@ public class RustdlReasoner extends OWLReasonerBase {
         if (r.universal_role_ordinary) {
             out.add(universalRoleNote("realize"));
         }
+        if (r.data_case_split_risk) {
+            out.add(dataCaseSplitNote("realize"));
+        }
         return out;
     }
 
@@ -435,6 +448,14 @@ public class RustdlReasoner extends OWLReasonerBase {
         return "rustdl " + command + ": owl:topObjectProperty is used here as the universal "
             + "role, which rustdl treats as an ordinary property. Positive answers are sound; "
             + "a negative answer or a missing entailment may be wrong.";
+    }
+
+    /** #589: the CLI's `note_data_case_split`, naming the surface. */
+    static String dataCaseSplitNote(String command) {
+        return "rustdl " + command + ": a data range here may need reasoning by cases (a range "
+            + "that is not a single value meets another of its datatype), which rustdl does not "
+            + "do. Positive answers are sound; a negative answer or a missing entailment may be "
+            + "wrong.";
     }
 
     /**

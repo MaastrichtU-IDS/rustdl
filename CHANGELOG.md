@@ -7,6 +7,34 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Added
+- **Every surface says when a data range may need reasoning by cases (#589):
+  `data_case_split_risk`.** Data ranges lower to atomic keys and no engine splits a key
+  into its values, so `C ⊑ ∃d.{1,2}`, `hasValue(d,1) ⊑ E`, `hasValue(d,2) ⊑ E` missed
+  `C ⊑ E` (HermiT and Konclude derive it) with `completeness_guaranteed: true` and nothing
+  dropped. The same held for a range covered by others (`int[1,10]` by `[1,5]` and
+  `[6,10]`, integer by decimal ranges, `xsd:boolean` by its values, adjacent floats) and a
+  range narrowing a filler (`Range(d, nonNegativeInteger)` with `∃d.(≤1)`).
+  - The conversion now counts the data keys that may need a split: a key that is not a
+    single value meets another key of its value space with no seeded `⊑` into it (integer
+    with decimal and a range with its enumeration as one space; an IEEE zero point is two
+    values), and every empty key (`int[5,1]`, `decimal(1.0, 1.0]`, float bounds with no
+    `f32` between them), which the engines also treat as an atom, so `C ⊑ ∃d.int[5,1]`
+    left `C` satisfiable, certified. A bare `rdf:langString` counts as meeting every string
+    key, as HermiT and Konclude read it. The rule is coarse, role- and polarity-blind, so it can flag where nothing is
+    missed.
+  - The flag voids `completeness_guaranteed` (condition 12; a proved inconsistency masks
+    it) on `classify`, the single queries (`QueryStats`), `sat-expr`, `subclass-expr` and
+    `instances-expr`. It sits beside `universal_role_ordinary` in every JSON result and in
+    `unlowered`, prints one stderr note beside every universal-role note, adds a banner to
+    the `report` HTML, drops `explain`'s completeness claim and makes `verify-el`
+    `Unresolved` (`DataKeyNeedsCaseSplit`, exit 3). Python reads it as
+    `Classification.data_case_split_risk`, the expression results' field and
+    `DataCaseSplitWarning`; the Protégé plugin warns on it.
+  - Answers are unchanged: stating the split as a disjunction (Step 2 of the plan) is
+    deferred. Measured through `unlowered` on the 1,920-file ORE pool (25 cut at 90 s, 8
+    rejected): the detector flags 424 files, but of the 944 the classify fast-path gate admits
+    only 2 lose the certificate (`ore_ont_11949`, `ore_ont_15635`), and 1 of the 911 realize
+    admits.
 - **Opt-in: the wedges can see complex `DisjointClasses` / `DisjointUnion` members (#600; `RUSTDL_CLAUSIFY_COMPLEX_DISJOINT=1`, default OFF).** The wedge clausifier defers a member it cannot encode as a body (`∀`, `≤n`, `≥n`, …) and a `DisjointUnion` covering with any complex member, and skips (uncounted) the pairwise half for such a member. Both wedges trust their `Sat`, so `consistent` and `classify` miss what those axioms entail while `sat` / `subclass` (the main tableau) find it: `DisjointUnion(:C :A ∃r.B)` with `C(c)`, `¬A(c)`, `∀r.¬B(c)` reads consistent; `DisjointClasses(:A ∀r.B)` with `D ⊑ A, ∀r.B` leaves `D` satisfiable; `DisjointUnion(:C :A ∀r.B)` with `D ⊑ ∀r.B` misses `D ⊑ C` (HermiT and Konclude agree on all). **These misses remain at the default.** With the flag on they go through the GCI path (`a ⊓ b ⊑ ⊥`, `member ⊑ class`, `class ⊑ ⊔members`) where the body encoding fails, and at most 2 trigger-less fallbacks (`TRIGGERLESS_FALLBACK_CAP`) are emitted per clausification. It is opt-in because the fallback's `⊤`-bodied clauses have unbounded cost on growing ontologies: one trigger-less axiom beside a 200-class chain took 24.8 s and was cut (main 0.07 s, complete), and soft-trigger fallbacks with range axioms blow up too (64 axioms: 21.7 s, cut); a cut loses answers. A default flip waits for a cost guard (see the follow-up issue; the `#[ignore]`d sentinel `a_long_chain_with_one_trigger_less_axiom_stays_complete` gates it).
 - **`classify --json` reports `wedge_clauses_deferred` (#600):** the classify wedge's own deferral events (complex disjointness members at the default, the antecedent DNF cap, the reflexive-derived cap), so the miss above is visible. A non-zero count prints a `NOT GUARANTEED COMPLETE` stderr warning and a `# wedge clauses deferred` line, as `wedge_clauses_refused` does, and Python's `Classification.wedge_clauses_deferred` carries it with an `IncompleteClassificationWarning`. The Protégé plugin does not read it yet.
 - **`classify` can seed the individuals named in `TBox` nominals, and says when it did not

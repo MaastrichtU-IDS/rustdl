@@ -1,6 +1,6 @@
 # A data enumeration is not split into its points (#556), and signed-zero residuals (#590)
 
-**Status:** open. §1 is a sound miss that can read `completeness_guaranteed: true` (the D10 shape), so it needs an issue. §2's remaining residual is a sound miss under a withheld guarantee.
+**Status:** open, and signalled since #589. Both are sound misses. Before #589 the first read `completeness_guaranteed: true` (the D10 shape); now every surface reports `data_case_split_risk: true` and voids its guarantee (condition 12, see "Signal" below). The entailments themselves are still missed. §2 (#590): the one remaining signed-zero residual, the case split over `[0, 0]`, voids the guarantee through two conditions at once. The fragment gate rejects the ontology (`has_signed_zero_split`, condition 1), and `data_case_split_risk` is set because `[0, 0]` meets the zero points without an edge into them (condition 12). It is one residual, not two.
 
 #556 seeds told `DKey ⊑ DKey` edges between the range bucket and the enumeration bucket of one datatype: `enumeration ⊑ range` and `range ⊑ enumeration`. Two shapes remain out of reach: §1, and the signed-zero cases in §2.
 
@@ -38,3 +38,38 @@ What remains:
 - `Functional(d)` with `d(a, 0.0)` and `d(a, -0.0)` is inconsistent (the specification's own example), and rustdl derives it from the disjoint zero points. HermiT reads the `xsd:double` form consistent.
 
 Pinned in `crates/owl-dl-reasoner/tests/signed_zero.rs` (`signed_zero_residuals`) and `concrete_domain_clash.rs` (`float_oneof_signed_zero_dedup_unsat`).
+
+## Signal (#589)
+
+Both shapes, and the wider family they belong to, now set `data_case_split_risk`
+(`owl_dl_core::convert::data_case_split_risk`): a data key that is not a single value meets
+another key of its value space without a seeded `⊑` edge into it. The family, from the #589
+plan review (probes in `~/rustdl/sweeps/wB/589/fable/`):
+
+- a range or enumeration covered by others: `{1,2}` by its points, `int[1,10]` by `[1,5]` and
+  `[6,10]`, an integer range by decimal ranges, two overlapping decimal ranges, `xsd:integer`
+  by `≤0` and `≥1`, `xsd:boolean` and a string enumeration by their values, two adjacent float
+  points;
+- a range narrowing a filler: `Range(d, [9,20])` with `∃d.[1,10]`, or
+  `Range(d, nonNegativeInteger)` with `∃d.(≤1)`, and the points of the intersection;
+- an unrelated superset key does not clear the flag (`t_superkey`), and the degenerate zero
+  range `[0, 0]` counts as two values, while a literal zero point is one (section 2, #590);
+- an empty key (`int[5,1]`, `decimal(1.0, 1.0]`, float bounds with no `f32` between them),
+  which needs no split but is an atom to the engines, so `C ⊑ ∃d.int[5,1]` left `C`
+  satisfiable (Fable review of #589; pre-existing on main);
+- a plain string against bare `rdf:langString`, which `HermiT` and Konclude read as holding it
+  (no `str ⊑ lang` edge is seeded).
+
+The detector is coarse (role- and polarity-blind), so it also flags shapes that entail nothing,
+such as a cover on another property (`t_otherprop`). On the 1,920-file ORE pool (2026-11-28, through `unlowered`; 25 files cut at
+90 s, 8 rejected) it flags 424 files, but only 2 of the 944 the classify fast-path gate admits
+(`ore_ont_11949`, `ore_ont_15635`) and 1 of the 911 realize admits, so the certificates it
+costs are few.
+
+**Not done (deferred):** stating the split as a told disjunction
+(`DKey(K) ⊑ DKey(K₁) ⊔ … ⊔ DKey(Kₙ)`). It answers right where it applies (hand-checked on the
+plan review's `s2_*` probes), but it does not cover the range-intersection shape, takes the
+ontology off the saturation fast path, and needs an arity cap. The in-EL intersection axiom for
+range narrowing (`DKey[1,5] ⊓ DKey[5,10] ⊑ DKey[5,5]`, `s2_range_inter_horn`) is the better
+first completeness step.
+

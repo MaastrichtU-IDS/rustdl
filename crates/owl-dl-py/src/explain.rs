@@ -207,12 +207,18 @@ pub(crate) struct PyPreparedOntology {
     inner: owl_dl_reasoner::justify::PreparedJustifier<RcStr>,
     /// #543, computed once at prepare time; the wrappers warn `UniversalRoleWarning`.
     universal_role_ordinary: bool,
+    /// #589, computed once at prepare time; the wrappers warn `DataCaseSplitWarning`.
+    data_case_split_risk: bool,
 }
 
-/// #543's flag for a prepared ontology, from a conversion at prepare time (#619: no
-/// byte prefilter; a prefix that cuts inside the name hid the use from it).
-fn prepared_universal_role(onto: &horned_owl::ontology::set::SetOntology<RcStr>) -> bool {
-    owl_dl_reasoner::conversion_report(onto).is_ok_and(|(_, uro)| uro)
+/// `(universal_role_ordinary, data_case_split_risk)` for a prepared ontology: #543's
+/// and #589's flags, from one conversion at prepare time (#619: no byte prefilter; a
+/// prefix that cuts inside the name hid the use from it). A failed conversion reads
+/// as neither flag.
+fn prepared_flags(onto: &horned_owl::ontology::set::SetOntology<RcStr>) -> (bool, bool) {
+    owl_dl_reasoner::conversion_flags(onto)
+        .map(|f| (f.universal_role_ordinary, f.data_case_split_risk))
+        .unwrap_or_default()
 }
 
 #[pymethods]
@@ -222,6 +228,13 @@ impl PyPreparedOntology {
     #[getter]
     fn universal_role_ordinary(&self) -> bool {
         self.universal_role_ordinary
+    }
+
+    /// #589: some data range may need reasoning by cases over its values, which
+    /// rustdl does not do; a "not entailed" may be wrong.
+    #[getter]
+    fn data_case_split_risk(&self) -> bool {
+        self.data_case_split_risk
     }
 
     /// #597: the axioms conversion dropped (kind → count); empty when none. A
@@ -274,9 +287,11 @@ impl PyPreparedOntology {
 #[pyfunction]
 pub(crate) fn prepare(path: &str) -> PyResult<PyPreparedOntology> {
     let onto = load::load_path(path)?;
+    let (universal_role_ordinary, data_case_split_risk) = prepared_flags(&onto);
     Ok(PyPreparedOntology {
         inner: owl_dl_reasoner::justify::PreparedJustifier::prepare(&onto),
-        universal_role_ordinary: prepared_universal_role(&onto),
+        universal_role_ordinary,
+        data_case_split_risk,
     })
 }
 
@@ -287,9 +302,11 @@ pub(crate) fn prepare(path: &str) -> PyResult<PyPreparedOntology> {
 #[pyo3(signature = (data, *, format))]
 pub(crate) fn prepare_bytes(data: &[u8], format: &str) -> PyResult<PyPreparedOntology> {
     let onto = load::load_bytes(data, format)?;
+    let (universal_role_ordinary, data_case_split_risk) = prepared_flags(&onto);
     Ok(PyPreparedOntology {
         inner: owl_dl_reasoner::justify::PreparedJustifier::prepare(&onto),
-        universal_role_ordinary: prepared_universal_role(&onto),
+        universal_role_ordinary,
+        data_case_split_risk,
     })
 }
 
